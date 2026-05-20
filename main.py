@@ -14,7 +14,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
-import database as db
+from aiohttp import web
+from google import genai
+from google.genai import types as genai_types
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -22,7 +24,6 @@ from oauth2client.service_account import ServiceAccountCredentials
 # НАСТРОЙКИ
 # ===========================================
 BOT_TOKEN = "8918794962:AAGMCCr86CkgL6ASFmFoJnqNgc-Kp6Vsvtw"
-ADMIN_IDS = [1781331191]
 
 # Google Sheets
 SPREADSHEET_ID = "1Z70dNBhBC6Qb84Tiig8PJWaTpU3YoN_QC-zdEb4hzfM"
@@ -83,7 +84,6 @@ def load_roles():
         with open(ROLES_FILE, "w", encoding="utf-8") as f:
             f.write("# Формат: Telegram ID|роль\n")
             f.write("# Роли: admin, moderator\n")
-            f.write(f"{ADMIN_IDS[0]}|admin\n")
     return roles
 
 def get_user_role(user_id: int) -> str:
@@ -136,7 +136,6 @@ def load_ratings():
     except FileNotFoundError:
         with open(RATINGS_FILE, "w", encoding="utf-8") as f:
             f.write("# Формат: Telegram ID|username|роль|оценки через запятую\n")
-            f.write("# Бот автоматически добавляет персонал при первом действии\n")
     return ratings
 
 def save_ratings(ratings):
@@ -304,7 +303,6 @@ def get_back_keyboard():
     ])
 
 def get_ticket_keyboard(ticket_id: str, user_role: str, is_assigned: bool = False, is_view_mode: bool = False):
-    # РЕЖИМ ПРОСМОТРА
     if is_view_mode:
         keyboard = [
             [InlineKeyboardButton(text="💬 Ответить", callback_data=f"admin_reply_{ticket_id}")],
@@ -316,7 +314,6 @@ def get_ticket_keyboard(ticket_id: str, user_role: str, is_assigned: bool = Fals
         keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"back_to_ticket_{ticket_id}")])
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
     
-    # ПРИНЯТЫЙ ТИКЕТ (у того, кто принял)
     if is_assigned:
         keyboard = [
             [InlineKeyboardButton(text="💬 Ответить", callback_data=f"admin_reply_{ticket_id}")],
@@ -326,14 +323,13 @@ def get_ticket_keyboard(ticket_id: str, user_role: str, is_assigned: bool = Fals
         if user_role == "admin":
             keyboard.append([InlineKeyboardButton(text="🚫 В чёрный список", callback_data=f"blacklist_user_{ticket_id}")])
         return InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    # НОВЫЙ ТИКЕТ (не принят)
-    keyboard = [
-        [InlineKeyboardButton(text="💬 Принять", callback_data=f"accept_{ticket_id}")]
-    ]
-    if user_role == "admin":
-        keyboard.append([InlineKeyboardButton(text="👁️ Посмотреть", callback_data=f"view_{ticket_id}")])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+    else:
+        keyboard = [
+            [InlineKeyboardButton(text="💬 Принять", callback_data=f"accept_{ticket_id}")]
+        ]
+        if user_role == "admin":
+            keyboard.append([InlineKeyboardButton(text="👁️ Посмотреть", callback_data=f"view_{ticket_id}")])
+        return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_user_reply_keyboard(ticket_id: str):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -807,6 +803,64 @@ async def cmd_announce(message: types.Message):
     await send_new_message(message.chat.id, f"✅ Рассылка завершена!\n\n📨 Отправлено: {success}\n❌ Не доставлено: {fail}")
     log_action(message.from_user.id, message.from_user.username or "admin", "РАССЫЛКА", details=f"Отправлено {success}, не доставлено {fail}")
 
+# ========== AI АВТООТВЕТЧИК (GOOGLE GEMINI) ==========
+@dp.message()
+async def ai_auto_reply(message: types.Message):
+    # --- 1. Базовые проверки ---
+    if message.text and message.text.startswith('/'):
+        return
+    if is_blacklisted(message.from_user.id):
+        return
+    if len(message.text) > 300:
+        return
+    
+    # Проверяем, не в процессе ли создания тикета
+    try:
+        state = await dp.fsm.get_context(chat=message.chat.id, user=message.from_user.id)
+        current_state = await state.get_state()
+        if current_state == CreateTicketStates.waiting_for_ticket_text:
+            return
+    except:
+        pass
+
+    # --- 2. Проверяем API-ключ ---
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        print("❌ GEMINI_API_KEY не найден в переменных окружения Render!")
+        return
+
+    # --- 3. Инициализируем клиент Gemini ---
+    genai_client = genai.Client(api_key=api_key)
+
+    # --- 4. Показываем статус "печатает..." ---
+    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+
+    try:
+        # --- 5. Запрос к Gemini (синхронный, запускаем в потоке) ---
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: genai_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=message.text,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction="Ты вежливый и полезный помощник службы поддержки ARVION. Отвечай кратко и по делу. Если вопрос сложный или ты не уверен в ответе, предложи пользователю создать официальный тикет через команду /create_ticket."
+                )
+            )
+        )
+        
+        answer = response.text
+        
+        # --- 6. Отправляем ответ ---
+        if len(answer) > 4000:
+            for i in range(0, len(answer), 4000):
+                await message.answer(answer[i:i+4000])
+        else:
+            await message.answer(answer)
+
+    except Exception as e:
+        print(f"❌ Gemini ошибка: {e}")
+
 # ========== ОБРАБОТЧИКИ ТИКЕТОВ ==========
 @dp.callback_query(F.data.startswith("type_"))
 async def process_type_selection(callback: types.CallbackQuery, state: FSMContext):
@@ -925,9 +979,7 @@ async def accept_ticket(callback: types.CallbackQuery):
         user_id = ticket[2]
         await bot.send_message(user_id, f"✅ Ваш тикет #{ticket_id} принят в работу. Ожидайте ответа!")
     
-    # Обновляем клавиатуру у того, кто принял
     await callback.message.edit_reply_markup(reply_markup=get_ticket_keyboard(ticket_id, role, True))
-    
     await callback.answer("✅ Тикет принят! Теперь вы можете отвечать, закрыть или передать его.")
     log_action(admin_id, callback.from_user.username or "admin", "ПРИНЯЛ ТИКЕТ", ticket_id)
 
@@ -1241,27 +1293,22 @@ async def close_ticket(callback: types.CallbackQuery):
         return
     
     ticket_id = callback.data.split("_")[1]
-    ticket = db.get_ticket(ticket_id)
-    if not ticket:
-        await callback.answer("❌ Тикет не найден!")
+    assigned = db.get_assigned_admin(ticket_id)
+    if assigned != callback.from_user.id:
+        await callback.answer("❌ Тикет принят другим!", show_alert=True)
         return
     
-    # Кто закрывает — тот и считается ответственным за тикет
-    admin_id = callback.from_user.id
-    
-    # Обновляем статус
     db.update_ticket_status(ticket_id, "closed")
-    db.assign_ticket(ticket_id, admin_id)  # Назначаем того, кто закрыл
+    db.unassign_ticket(ticket_id)
+    ticket = db.get_ticket(ticket_id)
     
-    # Отправляем пользователю запрос оценки
-    user_id = ticket[2]
-    await bot.send_message(user_id, f"✅ Тикет #{ticket_id} закрыт.\n\nОцените работу администратора:", reply_markup=get_rating_keyboard(ticket_id))
+    if ticket:
+        user_id = ticket[2]
+        await bot.send_message(user_id, f"✅ Тикет #{ticket_id} закрыт.\n\nОцените работу:", reply_markup=get_rating_keyboard(ticket_id))
     
-    # Убираем кнопки у сообщения админа
+    await callback.answer("✅ Тикет закрыт")
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.answer("✅ Тикет закрыт! Пользователь получил запрос оценки.")
-    log_action(admin_id, callback.from_user.username or "admin", "ЗАКРЫТИЕ ТИКЕТА", ticket_id)
-
+    log_action(callback.from_user.id, callback.from_user.username or "admin", "ЗАКРЫТИЕ ТИКЕТА", ticket_id)
 
 # ========== ЧЁРНЫЙ СПИСОК ==========
 @dp.callback_query(F.data.startswith("blacklist_user_"))
@@ -1295,29 +1342,9 @@ async def process_rating(callback: types.CallbackQuery):
         await callback.answer("❌ Тикет не найден")
         return
     
-    # Ищем кто был назначен на тикет (кто закрыл)
     assigned_admin = db.get_assigned_admin(ticket_id)
-    
-    # Если нет назначенного, пробуем найти того, кто его закрыл (из истории)
     if not assigned_admin:
-        # Ищем в сообщениях, кто последний отвечал
-        messages = db.get_messages(ticket_id)
-        for msg in reversed(messages):
-            if msg[1] == "admin" and msg[2]:
-                # Пытаемся найти админа по username
-                # Это не идеально, но работает
-                pass
-        
-        # Если не нашли — ставим оценку первому админу из списка
-        if not assigned_admin:
-            roles = load_roles()
-            for admin_id in roles.keys():
-                if roles[admin_id] == "admin":
-                    assigned_admin = admin_id
-                    break
-    
-    if not assigned_admin:
-        await callback.answer("❌ Не удалось определить администратора для оценки", show_alert=True)
+        await callback.answer("❌ Админ не найден")
         return
     
     if await add_rating(assigned_admin, rating, ticket_id, user_id):
@@ -1333,7 +1360,6 @@ async def process_rating(callback: types.CallbackQuery):
         log_action(0, "system", "ОЦЕНКА ТИКЕТА", ticket_id, f"Оценка: {rating} от {user_id} для админа {assigned_admin}")
     else:
         await callback.answer("❌ Нельзя оценить самого себя!", show_alert=True)
-        
 
 # ========== ОТВЕТЫ ПОЛЬЗОВАТЕЛЕЙ ==========
 @dp.callback_query(F.data.startswith("user_reply_"))
@@ -1397,9 +1423,7 @@ async def send_user_reply(message: types.Message, state: FSMContext):
         pass
     await state.clear()
 
-# ========== ЗАПУСК ==========
-from aiohttp import web
-
+# ========== ВЕБ-СЕРВЕР ДЛЯ RENDER ==========
 async def health_check(request):
     return web.Response(text="OK")
 
@@ -1413,6 +1437,7 @@ async def start_web_server():
     await site.start()
     print("✅ Веб-сервер запущен на порту 10000")
 
+# ========== ЗАПУСК ==========
 async def main():
     await bot.delete_webhook()
     
@@ -1424,7 +1449,7 @@ async def main():
     print("=" * 40)
     print("👑 Режим: принятие тикетов, рейтинг персонала, передача тикетов")
     print("📌 Команда /top_staff доступна ВСЕМ пользователям")
-    print("📌 Персонал автоматически добавляется в рейтинг при первом действии")
+    print("🤖 AI помощник (Google Gemini) активирован")
     print("=" * 40)
     await dp.start_polling(bot)
 
