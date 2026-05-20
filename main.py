@@ -15,8 +15,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiohttp import web
-from google import genai
-from google.genai import types as genai_types
+#
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
