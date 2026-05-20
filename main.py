@@ -1400,10 +1400,14 @@ async def send_user_reply(message: types.Message, state: FSMContext):
 # ========== ЗАПУСК ==========
 async def main():
     await bot.delete_webhook()
+    
+    # Запускаем веб-сервер для Render
+    asyncio.create_task(start_web_server())
+    
     print("=" * 40)
     print("✅ БОТ ЗАПУЩЕН!")
     print("=" * 40)
-    print("👑 Режим: принятие тикетов, рейтинг персонала, передача тикетов")
+    print("⚠️ Режим: принятие тикетов, рейтинг персонала, передача тикетов")
     print("📌 Команда /top_staff доступна ВСЕМ пользователям")
     print("📌 Персонал автоматически добавляется в рейтинг при первом действии")
     print("=" * 40)
