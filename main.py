@@ -380,6 +380,15 @@ def get_clear_keyboard():
         [InlineKeyboardButton(text="❌ НЕТ, отмена", callback_data="cancel_clear")]
     ])
 
+def get_donate_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ 5 Stars", callback_data="donate_5")],
+        [InlineKeyboardButton(text="⭐ 10 Stars", callback_data="donate_10")],
+        [InlineKeyboardButton(text="⭐ 25 Stars", callback_data="donate_25")],
+        [InlineKeyboardButton(text="⭐ 50 Stars", callback_data="donate_50")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")]
+    ])
+
 # ========== ШАБЛОНЫ ФОРМ ==========
 TICKET_TEMPLATES = {
     "complaint": "📋 ФОРМА ЖАЛОБЫ | ARVION\n\nDiscord тег: \nTelegram username: \nНарушитель (ник/ID): \nСуть нарушения: \nДоказательства (скриншоты, ссылки): \nДата и время инцидента: \nПодробное описание:",
@@ -536,19 +545,17 @@ async def cmd_donate(message: types.Message):
     if is_blacklisted(message.from_user.id):
         await send_new_message(message.chat.id, "⛔ Вы заблокированы!")
         return
+    try:
+        await message.delete()
+    except:
+        pass
     text = (
-        "❤️ *Поддержать проект ARVION Support*\n\n"
+        "Поддержать проект ARVION Support\n\n"
         "Вы можете отправить донат через Telegram Stars.\n"
         "Все средства пойдут на развитие и улучшение бота.\n\n"
         "Спасибо за вашу поддержку!"
     )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ 5 Stars", callback_data="donate_5")],
-        [InlineKeyboardButton(text="⭐ 10 Stars", callback_data="donate_10")],
-        [InlineKeyboardButton(text="⭐ 25 Stars", callback_data="donate_25")],
-        [InlineKeyboardButton(text="⭐ 50 Stars", callback_data="donate_50")]
-    ])
-    await send_new_message(message.chat.id, text, parse_mode="Markdown", reply_markup=keyboard)
+    await send_new_message(message.chat.id, text, reply_markup=get_donate_keyboard())
 
 @dp.callback_query(F.data.startswith("donate_"))
 async def process_donate(callback: types.CallbackQuery):
@@ -566,6 +573,16 @@ async def process_donate(callback: types.CallbackQuery):
         start_parameter="donation"
     )
     await callback.answer()
+    # Удаляем сообщение с кнопками после отправки инвойса
+    await delete_previous_bot_message(callback.message.chat.id)
+
+@dp.callback_query(F.data == "back_to_main")
+async def back_to_main(callback: types.CallbackQuery):
+    await callback.answer()
+    # Удаляем сообщение с донатом
+    await delete_previous_bot_message(callback.message.chat.id)
+    # Отправляем главное меню (команда start)
+    await cmd_start(callback.message)
 
 @dp.pre_checkout_query()
 async def process_pre_checkout(query: PreCheckoutQuery):
@@ -573,7 +590,7 @@ async def process_pre_checkout(query: PreCheckoutQuery):
 
 @dp.message(F.successful_payment)
 async def process_successful_payment(message: types.Message):
-    await message.answer("❤️ *Огромное спасибо за поддержку!*\n\nВаши средства пойдут на развитие бота ARVION Support.", parse_mode="Markdown")
+    await message.answer("❤️ Огромное спасибо за поддержку! Ваши средства пойдут на развитие бота ARVION Support.")
     log_action(message.from_user.id, message.from_user.username or "user", "ДОНАТ", details=f"Сумма: {message.successful_payment.total_amount} Stars")
 
 # ========== НАЗНАЧЕНИЕ МОДЕРАТОРА ==========
@@ -584,7 +601,7 @@ async def cmd_new_moderator(message: types.Message):
         return
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await send_new_message(message.chat.id, "❌ Использование: `/new_moderator @username`\nПример: `/new_moderator @ivan`")
+        await send_new_message(message.chat.id, "❌ Использование: /new_moderator @username\nПример: /new_moderator @ivan")
         return
     username = args[1].lstrip('@')
     try:
@@ -613,41 +630,44 @@ async def cmd_help(message: types.Message):
         pass
     role = get_user_role(message.from_user.id)
 
-    if role == "user":
-        help_text = (
-            "📖 *ПОЛНАЯ ИНСТРУКЦИЯ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ*\n\n"
-            "/create_ticket – создать новое обращение (выберите тип, заполните форму)\n"
-            "/my_tickets – история ваших обращений (статус, дата, текст)\n"
-            "/get_user – узнать свой Telegram ID и username\n"
-            "/top_staff – топ персонала по рейтингу (оценки пользователей)\n"
-            "/donate – поддержать проект (Telegram Stars)\n"
-            "/help – эта инструкция\n\n"
-            "После закрытия тикета вы можете поставить оценку (⭐1-5).\n"
-            "Анализ тональности автоматически помечает сообщения 🔴🟡🟢.\n"
-            "Запрещены ложные обращения и спам."
-        )
-    elif role == "moderator":
-        help_text = (
-            "🛡️ *ИНСТРУКЦИЯ ДЛЯ МОДЕРАТОРА*\n\n"
-            "Ваши команды:\n"
+    # Общая часть для всех пользователей
+    help_text = (
+        "ИНСТРУКЦИЯ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ\n\n"
+        "/create_ticket – создать новое обращение (выберите тип, заполните форму)\n"
+        "/my_tickets – история ваших обращений (статус, дата, текст)\n"
+        "/get_user – узнать свой Telegram ID и username\n"
+        "/top_staff – топ персонала по рейтингу (оценки пользователей)\n"
+        "/donate – поддержать проект (Telegram Stars)\n"
+        "/help – эта инструкция\n\n"
+        "После закрытия тикета вы можете поставить оценку (1-5 звезд).\n"
+        "Анализ тональности автоматически помечает сообщения 🔴 негатив, 🟡 нейтрально, 🟢 позитив.\n"
+        "Запрещены ложные обращения и спам."
+    )
+    await send_new_message(message.chat.id, help_text, keep=True)
+
+    # Дополнительная часть для модераторов
+    if role == "moderator":
+        mod_extra = (
+            "\n\nДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ ДЛЯ МОДЕРАТОРА\n\n"
             "/stats – статистика обращений\n"
             "/search текст – поиск по тикетам\n"
             "/all_tickets – список открытых тикетов\n"
             "/templates – готовые шаблоны ответов\n"
             "/transfer @username – передать тикет администратору\n"
-            "/top_staff – топ персонала\n"
-            "/help – эта инструкция\n\n"
-            "*Работа с тикетом (кнопки):*\n"
+            "/top_staff – топ персонала\n\n"
+            "Работа с тикетом (кнопки):\n"
             "💬 Принять – взять тикет в работу\n"
             "💬 Ответить – написать пользователю (после появятся кнопки с шаблонами)\n"
             "✅ Закрыть тикет – завершить обращение (пользователь получит запрос оценки)\n"
             "📨 Передать – передать тикет администратору\n\n"
             "Вы не можете банить пользователей, очищать историю или делать рассылки."
         )
-    else:  # admin
-        help_text = (
-            "👑 *ИНСТРУКЦИЯ ДЛЯ АДМИНИСТРАТОРА*\n\n"
-            "*Основные команды:*\n"
+        await send_new_message(message.chat.id, mod_extra, keep=True)
+
+    # Дополнительная часть для администраторов
+    elif role == "admin":
+        admin_extra = (
+            "\n\nДОПОЛНИТЕЛЬНЫЕ КОМАНДЫ ДЛЯ АДМИНИСТРАТОРА\n\n"
             "/stats – статистика\n"
             "/clear_tickets – удалить ВСЕ тикеты (с подтверждением)\n"
             "/templates – показать шаблоны\n"
@@ -661,13 +681,13 @@ async def cmd_help(message: types.Message):
             "/transfer @username – передать текущий принятый тикет другому админу/модератору\n"
             "/donate – поддержать проект (доступно всем)\n"
             "/help – эта инструкция\n\n"
-            "*Кнопки под тикетом:*\n"
+            "Кнопки под тикетом:\n"
             "💬 Принять, 👁️ Посмотреть, 💬 Ответить, ✅ Закрыть, 📨 Передать, 🚫 В чёрный список\n\n"
-            "*Шаблоны ответов:* хранятся в `templates.txt`, редактируются на сервере. При ответе появляются кнопки с шаблонами.\n"
-            "*Анализ тональности* автоматически ставит 🔴 (негатив), 🟡 (нейтрально), 🟢 (позитив) перед тикетом.\n"
-            "*Чёрный список* – в файле `blacklist.txt`. Заблокированные пользователи не могут создавать тикеты."
+            "Шаблоны ответов: хранятся в файле templates.txt, редактируются на сервере. При ответе появляются кнопки с шаблонами.\n"
+            "Анализ тональности автоматически ставит 🔴 (негатив), 🟡 (нейтрально), 🟢 (позитив) перед тикетом.\n"
+            "Чёрный список – в файле blacklist.txt. Заблокированные пользователи не могут создавать тикеты."
         )
-    await send_new_message(message.chat.id, help_text, keep=True, parse_mode="Markdown")
+        await send_new_message(message.chat.id, admin_extra, keep=True)
 
 # ========== СТАТИСТИКА, ОЧИСТКА, ШАБЛОНЫ, ПОИСК, СПИСОК, ЭКСПОРТ, ЛОГИ, РАССЫЛКА ==========
 @dp.message(Command("stats"))
@@ -866,7 +886,7 @@ async def cmd_announce(message: types.Message):
         if is_blacklisted(user_id):
             continue
         try:
-            await bot.send_message(user_id, f"📢 *МАССОВОЕ УВЕДОМЛЕНИЕ*\n\n{announce_text}", parse_mode="Markdown")
+            await bot.send_message(user_id, f"📢 МАССОВОЕ УВЕДОМЛЕНИЕ\n\n{announce_text}")
             success += 1
             await asyncio.sleep(0.05)
         except:
@@ -940,7 +960,7 @@ async def process_ticket_message(message: types.Message, state: FSMContext):
         # Анализ тональности и метка "админ"
         sentiment_emoji, sentiment_text = analyze_sentiment(ticket_text)
         user_role = get_user_role(user_id)
-        role_prefix = "👑 *АДМИН* " if user_role == "admin" else ""
+        role_prefix = "👑 АДМИН " if user_role == "admin" else ""
         admin_message = f"{role_prefix}🆔 НОВЫЙ ТИКЕТ #{ticket_id} {sentiment_emoji}[{sentiment_text}]\n\n👤 {user_link} (ID: {user_id})\n\n{ticket_text}"
         roles = load_roles()
         for admin_id in roles.keys():
@@ -1166,12 +1186,11 @@ async def send_template_reply(callback: types.CallbackQuery, state: FSMContext):
     admin_username = callback.from_user.username if callback.from_user.username else f"ID{callback.from_user.id}"
     avg_rating, rating_count = await get_user_rating(callback.from_user.id)
     rating_text = f" (рейтинг: {avg_rating}/5 ⭐)" if rating_count > 0 else " (рейтинг: 0/5 ⭐)"
-    role_prefix = "👑 *АДМИН* " if role == "admin" else ""
+    role_prefix = "👑 АДМИН " if role == "admin" else ""
     await bot.send_message(
         user_id,
         f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{template_text}",
-        reply_markup=get_user_reply_keyboard(ticket_id),
-        parse_mode="Markdown"
+        reply_markup=get_user_reply_keyboard(ticket_id)
     )
     update_dialog_in_google_sheets(ticket_id, admin_username, template_text[:500], is_admin=True)
     db.save_message(ticket_id, "admin", template_text)
@@ -1220,16 +1239,16 @@ async def send_admin_reply(message: types.Message, state: FSMContext):
     update_dialog_in_google_sheets(ticket_id, admin_username, reply_text[:500] if reply_text != "Голосовое сообщение" else "Голосовое сообщение", is_admin=True)
     avg_rating, rating_count = await get_user_rating(message.from_user.id)
     rating_text = f" (рейтинг: {avg_rating}/5 ⭐)" if rating_count > 0 else " (рейтинг: 0/5 ⭐)"
-    role_prefix = "👑 *АДМИН* " if role == "admin" else ""
+    role_prefix = "👑 АДМИН " if role == "admin" else ""
     try:
         if file_id and file_type == "photo":
-            await bot.send_photo(user_id, file_id, caption=f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{reply_text}", reply_markup=get_user_reply_keyboard(ticket_id), parse_mode="Markdown")
+            await bot.send_photo(user_id, file_id, caption=f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{reply_text}", reply_markup=get_user_reply_keyboard(ticket_id))
         elif file_id and file_type == "document":
-            await bot.send_document(user_id, file_id, caption=f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{reply_text}", reply_markup=get_user_reply_keyboard(ticket_id), parse_mode="Markdown")
+            await bot.send_document(user_id, file_id, caption=f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{reply_text}", reply_markup=get_user_reply_keyboard(ticket_id))
         elif file_id and file_type == "voice":
-            await bot.send_voice(user_id, file_id, caption=f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил голосовым", reply_markup=get_user_reply_keyboard(ticket_id), parse_mode="Markdown")
+            await bot.send_voice(user_id, file_id, caption=f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил голосовым", reply_markup=get_user_reply_keyboard(ticket_id))
         else:
-            await bot.send_message(user_id, f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{reply_text}", reply_markup=get_user_reply_keyboard(ticket_id), parse_mode="Markdown")
+            await bot.send_message(user_id, f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{reply_text}", reply_markup=get_user_reply_keyboard(ticket_id))
         await delete_previous_bot_message(message.chat.id)
         await send_new_message(message.chat.id, f"✅ Ответ отправлен для #{ticket_id}")
     except Exception as e:
