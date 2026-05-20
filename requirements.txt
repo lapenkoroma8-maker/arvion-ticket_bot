@@ -2,3 +2,4 @@ aiogram
 gspread
 oauth2client
 aiohttp
+google-genai
