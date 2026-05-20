@@ -1398,6 +1398,21 @@ async def send_user_reply(message: types.Message, state: FSMContext):
     await state.clear()
 
 # ========== ЗАПУСК ==========
+from aiohttp import web
+
+async def health_check(request):
+    return web.Response(text="OK")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 10000)
+    await site.start()
+    print("✅ Веб-сервер запущен на порту 10000")
+
 async def main():
     await bot.delete_webhook()
     
@@ -1407,7 +1422,7 @@ async def main():
     print("=" * 40)
     print("✅ БОТ ЗАПУЩЕН!")
     print("=" * 40)
-    print("⚠️ Режим: принятие тикетов, рейтинг персонала, передача тикетов")
+    print("👑 Режим: принятие тикетов, рейтинг персонала, передача тикетов")
     print("📌 Команда /top_staff доступна ВСЕМ пользователям")
     print("📌 Персонал автоматически добавляется в рейтинг при первом действии")
     print("=" * 40)
