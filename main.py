@@ -12,7 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, LabeledPrice, PreCheckoutQuery
-import database as db  # <--- ЭТО ВАЖНО
+import database as db
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from aiohttp import web
@@ -21,7 +21,7 @@ from aiohttp import web
 # НАСТРОЙКИ
 # ===========================================
 BOT_TOKEN = "8918794962:AAGMCCr86CkgL6ASFmFoJnqNgc-Kp6Vsvtw"
-ADMIN_IDS = [1781331191]  # Список ID супер-админов
+ADMIN_IDS = [1781331191]  # Список ID супер-админов (для некоторых функций)
 # Google Sheets
 SPREADSHEET_ID = "1Z70dNBhBC6Qb84Tiig8PJWaTpU3YoN_QC-zdEb4hzfM"
 CREDENTIALS_FILE = "credentials.json"
@@ -254,7 +254,7 @@ async def send_new_message(chat_id: int, text: str, keep=False, parse_mode=None,
         last_bot_messages[chat_id] = msg.message_id
     return msg
 
-# ========== ШАБЛОНЫ ДЛЯ АДМИНОВ (обычные) ==========
+# ========== ШАБЛОНЫ ДЛЯ АДМИНОВ (обычные, бесплатные) ==========
 TEMPLATES_FILE = "templates.txt"
 
 def load_templates():
@@ -298,37 +298,6 @@ def get_reply_keyboard(ticket_id: str):
                 keyboard.append(row)
                 row = []
     return InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
-
-# ========== ПЛАТНЫЕ ШАБЛОНЫ И ДОНАТЫ ==========
-PAID_TEMPLATES_FILE = "paid_templates.txt"
-
-def load_paid_templates(user_id: int) -> list:
-    try:
-        with open(PAID_TEMPLATES_FILE, "r") as f:
-            for line in f:
-                uid, keys = line.strip().split("|")
-                if int(uid) == user_id:
-                    return keys.split(",")
-    except:
-        pass
-    return []
-
-def save_paid_template(user_id: int, template_key: str):
-    existing = load_paid_templates(user_id)
-    if template_key not in existing:
-        existing.append(template_key)
-    data = {}
-    try:
-        with open(PAID_TEMPLATES_FILE, "r") as f:
-            for line in f:
-                uid, keys = line.strip().split("|")
-                data[int(uid)] = keys.split(",")
-    except:
-        pass
-    data[user_id] = existing
-    with open(PAID_TEMPLATES_FILE, "w") as f:
-        for uid, keys in data.items():
-            f.write(f"{uid}|{','.join(keys)}\n")
 
 # ========== ЛОГИРОВАНИЕ ==========
 LOG_FILE = "admin_logs.txt"
@@ -475,13 +444,13 @@ async def cmd_start(message: types.Message):
     await send_new_message(
         message.chat.id,
         "🌿 Добро пожаловать в ARVION Support!\n\n"
-        "📌 Команды:\n"
+        "📌 Основные команды:\n"
         "/create_ticket — новое обращение\n"
         "/my_tickets — мои обращения\n"
         "/get_user — мой ID\n"
         "/top_staff — топ персонала\n"
-        "/shop — магазин шаблонов и донат\n"
-        "/help — инструкция\n\n"
+        "/donate — поддержать проект\n"
+        "/help — полная инструкция\n\n"
         "👉 /create_ticket"
     )
 
@@ -561,137 +530,36 @@ async def cmd_top_staff(message: types.Message):
         text += f"{i}. {role_icon} @{display_name} ({role_name}) — {avg} ⭐ ({count} оценок)\n"
     await send_new_message(message.chat.id, text)
 
-@dp.message(Command("shop"))
-async def cmd_shop(message: types.Message):
+# ========== ДОНАТ (кнопки 5, 10, 25, 50 Stars) ==========
+@dp.message(Command("donate"))
+async def cmd_donate(message: types.Message):
     if is_blacklisted(message.from_user.id):
         await send_new_message(message.chat.id, "⛔ Вы заблокированы!")
         return
     text = (
-        "🛒 *Магазин шаблонов*\n\n"
-        "Вы можете купить готовые шаблоны ответов за Telegram Stars.\n\n"
-        "⭐ *Быстрый ответ* – 10 Stars\n"
-        "⭐ *Технический ответ* – 15 Stars\n"
-        "⭐ *Шаблон благодарности* – 5 Stars\n"
-        "⭐ *Полный набор (все 3)* – 25 Stars\n\n"
-        "Выберите шаблон:"
+        "❤️ *Поддержать проект ARVION Support*\n\n"
+        "Вы можете отправить донат через Telegram Stars.\n"
+        "Все средства пойдут на развитие и улучшение бота.\n\n"
+        "Спасибо за вашу поддержку!"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📦 Быстрый ответ (10 ⭐)", callback_data="buy_template_quick")],
-        [InlineKeyboardButton(text="🛠 Технический ответ (15 ⭐)", callback_data="buy_template_tech")],
-        [InlineKeyboardButton(text="🙏 Благодарность (5 ⭐)", callback_data="buy_template_thanks")],
-        [InlineKeyboardButton(text="🎁 Полный набор (25 ⭐)", callback_data="buy_template_all")],
-        [InlineKeyboardButton(text="❤️ Поддержать проект", callback_data="donate")]
+        [InlineKeyboardButton(text="⭐ 5 Stars", callback_data="donate_5")],
+        [InlineKeyboardButton(text="⭐ 10 Stars", callback_data="donate_10")],
+        [InlineKeyboardButton(text="⭐ 25 Stars", callback_data="donate_25")],
+        [InlineKeyboardButton(text="⭐ 50 Stars", callback_data="donate_50")]
     ])
     await send_new_message(message.chat.id, text, parse_mode="Markdown", reply_markup=keyboard)
 
-@dp.message(Command("my_templates"))
-async def cmd_my_templates(message: types.Message):
-    user_id = message.from_user.id
-    bought = load_paid_templates(user_id)
-    if not bought:
-        await send_new_message(message.chat.id, "📭 У вас пока нет купленных шаблонов. Перейдите в /shop, чтобы их приобрести.")
-        return
-    text = "📋 *Ваши купленные шаблоны:*\n\n"
-    for t in bought:
-        text += f"🔹 {t}\n"
-    text += "\nЧтобы использовать шаблон в ответе, просто скопируйте его текст из сообщения выше."
-    await send_new_message(message.chat.id, text, parse_mode="Markdown")
-
-# ========== НАЗНАЧЕНИЕ МОДЕРАТОРА ==========
-@dp.message(Command("new_moderator"))
-async def cmd_new_moderator(message: types.Message):
-    # Только администратор
-    if not is_admin(message.from_user.id):
-        await send_new_message(message.chat.id, "⛔ Только администратор может назначать модераторов.")
-        return
-
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await send_new_message(message.chat.id, "❌ Использование: `/new_moderator @username`\nПример: `/new_moderator @ivan`")
-        return
-
-    username = args[1].lstrip('@')
-    try:
-        user = await bot.get_chat(username)
-        user_id = user.id
-        user_name = user.username or user.first_name
-    except Exception:
-        await send_new_message(message.chat.id, f"❌ Пользователь @{username} не найден.")
-        return
-
-    if add_moderator(user_id, user_name):
-        await send_new_message(message.chat.id, f"✅ Пользователь @{user_name} назначен модератором!")
-        try:
-            await bot.send_message(user_id, f"🛡️ Вы назначены модератором в ARVION Support! Теперь вы можете отвечать на тикеты и закрывать их.\n\nИспользуйте /help для списка команд.")
-        except:
-            pass
-        log_action(message.from_user.id, message.from_user.username or "admin", "НАЗНАЧЕН МОДЕРАТОР", details=f"Модератор: {user_id} (@{user_name})")
-    else:
-        await send_new_message(message.chat.id, f"⚠️ Пользователь @{user_name} уже является модератором или администратором.")
-
-@dp.callback_query(F.data.startswith("buy_template_"))
-async def buy_template(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    user_role = get_user_role(user_id)
-    template_type = callback.data.split("_")[2]
-    # Бесплатно для админов
-    if user_role == "admin":
-        save_paid_template(user_id, template_type)
-        templates_text = {
-            "quick": "📦 *Быстрый ответ:*\nСпасибо за обращение! Мы рассмотрим его в ближайшее время.",
-            "tech": "🛠 *Технический ответ:*\nПожалуйста, сообщите версию устройства и сделайте скриншот ошибки.",
-            "thanks": "🙏 *Шаблон благодарности:*\nСпасибо, что выбрали ARVION!",
-            "all": "🎁 *Полный набор:*\nВы получили все три шаблона!"
-        }
-        if template_type == "all":
-            await callback.message.answer(
-                f"✅ Администратор, шаблоны добавлены бесплатно!\n\n{templates_text['all']}\n\nТеперь вы можете использовать их через /my_templates.",
-                parse_mode="Markdown"
-            )
-        else:
-            await callback.message.answer(
-                f"✅ Администратор, шаблон '{template_type}' добавлен бесплатно!\n\n{templates_text[template_type]}\n\nВаш шаблон в личной библиотеке. Используйте /my_templates.",
-                parse_mode="Markdown"
-            )
-        await callback.answer()
-        return
-    # Платеж для обычных
-    prices = {"quick": 10, "tech": 15, "thanks": 5, "all": 25}
-    amount = prices.get(template_type, 10)
-    title = {
-        "quick": "Быстрый ответ",
-        "tech": "Технический ответ",
-        "thanks": "Шаблон благодарности",
-        "all": "Полный набор шаблонов"
-    }[template_type]
-    await callback.bot.send_invoice(
-        chat_id=user_id,
-        title=title,
-        description=f"Вы покупаете шаблон: {title}",
-        payload=f"template_{template_type}",
-        currency="XTR",
-        prices=[LabeledPrice(label="Шаблон", amount=amount)],
-        need_name=False,
-        need_phone_number=False,
-        need_email=False,
-        start_parameter="template_shop"
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "donate")
-async def donate(callback: types.CallbackQuery):
-    user_role = get_user_role(callback.from_user.id)
-    if user_role == "admin":
-        await callback.message.answer("❤️ Спасибо за вашу работу, администратор! Ваша поддержка проекту – это ваш вклад в развитие. (Донат не требуется)")
-        await callback.answer()
-        return
+@dp.callback_query(F.data.startswith("donate_"))
+async def process_donate(callback: types.CallbackQuery):
+    amount = int(callback.data.split("_")[1])
     await callback.bot.send_invoice(
         chat_id=callback.from_user.id,
-        title="Поддержка проекта ARVION",
-        description="Вы можете поддержать разработку бота. Спасибо!",
+        title="Поддержка ARVION Support",
+        description=f"Донат в размере {amount} Stars",
         payload="donation",
         currency="XTR",
-        prices=[LabeledPrice(label="Донат", amount=10)],
+        prices=[LabeledPrice(label="Донат", amount=amount)],
         need_name=False,
         need_phone_number=False,
         need_email=False,
@@ -705,31 +573,38 @@ async def process_pre_checkout(query: PreCheckoutQuery):
 
 @dp.message(F.successful_payment)
 async def process_successful_payment(message: types.Message):
-    payment = message.successful_payment
-    payload = payment.invoice_payload
-    user_id = message.from_user.id
-    if payload.startswith("template_"):
-        template_type = payload.split("_")[1]
-        save_paid_template(user_id, template_type)
-        templates_text = {
-            "quick": "📦 *Быстрый ответ:*\nСпасибо за обращение! Мы рассмотрим его в ближайшее время.",
-            "tech": "🛠 *Технический ответ:*\nПожалуйста, сообщите версию устройства и сделайте скриншот ошибки.",
-            "thanks": "🙏 *Шаблон благодарности:*\nСпасибо, что выбрали ARVION!",
-            "all": "🎁 *Полный набор:*\nВы получили все три шаблона!"
-        }
-        if template_type == "all":
-            await message.answer(
-                f"✅ Оплата прошла успешно!\n\n{templates_text['all']}\n\nТеперь вы можете использовать шаблоны через /my_templates.",
-                parse_mode="Markdown"
-            )
-        else:
-            await message.answer(
-                f"✅ Оплата прошла успешно!\n\n{templates_text[template_type]}\n\nВаш шаблон добавлен в личную библиотеку. Используйте /my_templates.",
-                parse_mode="Markdown"
-            )
-    elif payload == "donation":
-        await message.answer("❤️ *Огромное спасибо за поддержку!*\n\nВаши средства пойдут на развитие бота ARVION Support.", parse_mode="Markdown")
+    await message.answer("❤️ *Огромное спасибо за поддержку!*\n\nВаши средства пойдут на развитие бота ARVION Support.", parse_mode="Markdown")
+    log_action(message.from_user.id, message.from_user.username or "user", "ДОНАТ", details=f"Сумма: {message.successful_payment.total_amount} Stars")
 
+# ========== НАЗНАЧЕНИЕ МОДЕРАТОРА ==========
+@dp.message(Command("new_moderator"))
+async def cmd_new_moderator(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await send_new_message(message.chat.id, "⛔ Только администратор может назначать модераторов.")
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await send_new_message(message.chat.id, "❌ Использование: `/new_moderator @username`\nПример: `/new_moderator @ivan`")
+        return
+    username = args[1].lstrip('@')
+    try:
+        user = await bot.get_chat(username)
+        user_id = user.id
+        user_name = user.username or user.first_name
+    except Exception:
+        await send_new_message(message.chat.id, f"❌ Пользователь @{username} не найден.")
+        return
+    if add_moderator(user_id, user_name):
+        await send_new_message(message.chat.id, f"✅ Пользователь @{user_name} назначен модератором!")
+        try:
+            await bot.send_message(user_id, f"🛡️ Вы назначены модератором в ARVION Support! Теперь вы можете отвечать на тикеты и закрывать их.\n\nИспользуйте /help для списка команд.")
+        except:
+            pass
+        log_action(message.from_user.id, message.from_user.username or "admin", "НАЗНАЧЕН МОДЕРАТОР", details=f"Модератор: {user_id} (@{user_name})")
+    else:
+        await send_new_message(message.chat.id, f"⚠️ Пользователь @{user_name} уже является модератором или администратором.")
+
+# ========== ПОДРОБНЫЙ HELP ДЛЯ КАЖДОЙ РОЛИ ==========
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     try:
@@ -737,42 +612,64 @@ async def cmd_help(message: types.Message):
     except:
         pass
     role = get_user_role(message.from_user.id)
-    user_help = (
-        "📖 ОБЩАЯ ИНСТРУКЦИЯ\n\n"
-        "/create_ticket — создать обращение\n"
-        "/my_tickets — мои обращения\n"
-        "/get_user — узнать свой ID\n"
-        "/top_staff — топ персонала\n"
-        "/shop — магазин шаблонов и донат\n"
-        "/help — эта инструкция\n\n"
-        "Правила: запрещены ложные обращения"
-    )
-    await send_new_message(message.chat.id, user_help, keep=True)
-    if role == "moderator":
-        mod_help = (
-            "🛡️ КОМАНДЫ МОДЕРАТОРА\n\n"
-            "/stats — статистика\n"
-            "/search текст — поиск\n"
-            "/all_tickets — список открытых тикетов\n"
-            "/templates — показать шаблоны\n\n"
-            "Кнопки под тикетом:\n"
-            "- 💬 Принять\n"
-            "- 💬 Ответить\n"
-            "- ✅ Закрыть тикет\n"
-            "- 📨 Передать (админу)"
-        )
-        await send_new_message(message.chat.id, mod_help, keep=True)
-    elif role == "admin":
-        admin_help = (
-            "👑 КОМАНДЫ АДМИНИСТРАТОРА\n\n"
-            "/stats, /clear_tickets, /templates, /search, /all_tickets, /export, /log, /top_staff, /announce\n"
-            "/new_moderator @username — назначить модератора\n"
-            "Кнопки под тикетом: Принять, Посмотреть, Ответить, Закрыть, Передать, В чёрный список.\n\n"
-            "Магазин: /shop (админам бесплатно)\n"
-            "Анализ тональности автоматически добавляет 🔴/🟢/🟡 в тикеты"
-        )
-        await send_new_message(message.chat.id, admin_help, keep=True)
 
+    if role == "user":
+        help_text = (
+            "📖 *ПОЛНАЯ ИНСТРУКЦИЯ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ*\n\n"
+            "/create_ticket – создать новое обращение (выберите тип, заполните форму)\n"
+            "/my_tickets – история ваших обращений (статус, дата, текст)\n"
+            "/get_user – узнать свой Telegram ID и username\n"
+            "/top_staff – топ персонала по рейтингу (оценки пользователей)\n"
+            "/donate – поддержать проект (Telegram Stars)\n"
+            "/help – эта инструкция\n\n"
+            "После закрытия тикета вы можете поставить оценку (⭐1-5).\n"
+            "Анализ тональности автоматически помечает сообщения 🔴🟡🟢.\n"
+            "Запрещены ложные обращения и спам."
+        )
+    elif role == "moderator":
+        help_text = (
+            "🛡️ *ИНСТРУКЦИЯ ДЛЯ МОДЕРАТОРА*\n\n"
+            "Ваши команды:\n"
+            "/stats – статистика обращений\n"
+            "/search текст – поиск по тикетам\n"
+            "/all_tickets – список открытых тикетов\n"
+            "/templates – готовые шаблоны ответов\n"
+            "/transfer @username – передать тикет администратору\n"
+            "/top_staff – топ персонала\n"
+            "/help – эта инструкция\n\n"
+            "*Работа с тикетом (кнопки):*\n"
+            "💬 Принять – взять тикет в работу\n"
+            "💬 Ответить – написать пользователю (после появятся кнопки с шаблонами)\n"
+            "✅ Закрыть тикет – завершить обращение (пользователь получит запрос оценки)\n"
+            "📨 Передать – передать тикет администратору\n\n"
+            "Вы не можете банить пользователей, очищать историю или делать рассылки."
+        )
+    else:  # admin
+        help_text = (
+            "👑 *ИНСТРУКЦИЯ ДЛЯ АДМИНИСТРАТОРА*\n\n"
+            "*Основные команды:*\n"
+            "/stats – статистика\n"
+            "/clear_tickets – удалить ВСЕ тикеты (с подтверждением)\n"
+            "/templates – показать шаблоны\n"
+            "/search текст – поиск\n"
+            "/all_tickets – список открытых тикетов\n"
+            "/export – выгрузить все тикеты в CSV\n"
+            "/log – история действий администраторов\n"
+            "/top_staff – топ персонала\n"
+            "/announce текст – массовая рассылка (всем пользователям и персоналу)\n"
+            "/new_moderator @username – назначить модератора\n"
+            "/transfer @username – передать текущий принятый тикет другому админу/модератору\n"
+            "/donate – поддержать проект (доступно всем)\n"
+            "/help – эта инструкция\n\n"
+            "*Кнопки под тикетом:*\n"
+            "💬 Принять, 👁️ Посмотреть, 💬 Ответить, ✅ Закрыть, 📨 Передать, 🚫 В чёрный список\n\n"
+            "*Шаблоны ответов:* хранятся в `templates.txt`, редактируются на сервере. При ответе появляются кнопки с шаблонами.\n"
+            "*Анализ тональности* автоматически ставит 🔴 (негатив), 🟡 (нейтрально), 🟢 (позитив) перед тикетом.\n"
+            "*Чёрный список* – в файле `blacklist.txt`. Заблокированные пользователи не могут создавать тикеты."
+        )
+    await send_new_message(message.chat.id, help_text, keep=True, parse_mode="Markdown")
+
+# ========== СТАТИСТИКА, ОЧИСТКА, ШАБЛОНЫ, ПОИСК, СПИСОК, ЭКСПОРТ, ЛОГИ, РАССЫЛКА ==========
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     try:
@@ -977,7 +874,7 @@ async def cmd_announce(message: types.Message):
     await send_new_message(message.chat.id, f"✅ Отправлено: {success}")
     log_action(message.from_user.id, message.from_user.username or "admin", "РАССЫЛКА")
 
-# ========== ОБРАБОТЧИКИ ТИКЕТОВ ==========
+# ========== ОБРАБОТЧИКИ ТИКЕТОВ (полный набор) ==========
 @dp.callback_query(F.data.startswith("type_"))
 async def process_type_selection(callback: types.CallbackQuery, state: FSMContext):
     if is_blacklisted(callback.from_user.id):
@@ -1066,7 +963,6 @@ async def process_ticket_message(message: types.Message, state: FSMContext):
         traceback.print_exc()
         await send_new_message(message.chat.id, "❌ Ошибка")
 
-# ========== ПРИНЯТИЕ / ПРОСМОТР / ПЕРЕДАЧА ==========
 @dp.callback_query(F.data.startswith("accept_"))
 async def accept_ticket(callback: types.CallbackQuery):
     await ensure_user_in_ratings(callback.from_user.id)
@@ -1222,7 +1118,6 @@ async def back_to_ticket(callback: types.CallbackQuery):
     await callback.message.delete()
     await callback.answer()
 
-# ========== ОТВЕТЫ АДМИНОВ ==========
 @dp.callback_query(F.data.startswith("admin_reply_"))
 async def admin_reply(callback: types.CallbackQuery, state: FSMContext):
     role = get_user_role(callback.from_user.id)
@@ -1346,7 +1241,6 @@ async def send_admin_reply(message: types.Message, state: FSMContext):
     await state.clear()
     log_action(message.from_user.id, admin_username, "ОТВЕТ", ticket_id)
 
-# ========== ЗАКРЫТИЕ ТИКЕТА ==========
 @dp.callback_query(F.data.startswith("close_"))
 async def close_ticket(callback: types.CallbackQuery):
     await ensure_user_in_ratings(callback.from_user.id)
@@ -1369,7 +1263,6 @@ async def close_ticket(callback: types.CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=None)
     log_action(callback.from_user.id, callback.from_user.username or "admin", "ЗАКРЫТИЕ ТИКЕТА", ticket_id)
 
-# ========== ЧЁРНЫЙ СПИСОК ==========
 @dp.callback_query(F.data.startswith("blacklist_user_"))
 async def blacklist_user(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -1386,7 +1279,6 @@ async def blacklist_user(callback: types.CallbackQuery):
     await bot.send_message(user_id, "⛔ ВЫ ЗАБЛОКИРОВАНЫ")
     log_action(callback.from_user.id, callback.from_user.username or "admin", "БЛОКИРОВКА", ticket_id, f"Заблокирован {user_id}")
 
-# ========== ОЦЕНКИ ==========
 @dp.callback_query(F.data.startswith("rate_"))
 async def process_rating(callback: types.CallbackQuery):
     parts = callback.data.split("_")
@@ -1414,7 +1306,6 @@ async def process_rating(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Нельзя оценить самого себя!", show_alert=True)
 
-# ========== ОТВЕТЫ ПОЛЬЗОВАТЕЛЕЙ ==========
 @dp.callback_query(F.data.startswith("user_reply_"))
 async def user_reply(callback: types.CallbackQuery, state: FSMContext):
     if is_blacklisted(callback.from_user.id):
@@ -1495,7 +1386,7 @@ async def main():
     print("=" * 40)
     print("👑 Режим: принятие тикетов, рейтинг персонала, передача тикетов")
     print("📌 Команда /top_staff доступна ВСЕМ")
-    print("🛒 Магазин шаблонов и донаты через Telegram Stars")
+    print("❤️ Донаты через Telegram Stars (5, 10, 25, 50 Stars)")
     print("📊 Анализ тональности (🔴 негатив, 🟢 позитив, 🟡 нейтрально)")
     print("=" * 40)
     await dp.start_polling(bot)
