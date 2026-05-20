@@ -804,63 +804,18 @@ async def cmd_announce(message: types.Message):
     await send_new_message(message.chat.id, f"✅ Рассылка завершена!\n\n📨 Отправлено: {success}\n❌ Не доставлено: {fail}")
     log_action(message.from_user.id, message.from_user.username or "admin", "РАССЫЛКА", details=f"Отправлено {success}, не доставлено {fail}")
 
-# ========== AI АВТООТВЕТЧИК (GOOGLE GEMINI) ==========
-@dp.message()
-async def ai_auto_reply(message: types.Message):
-    # --- 1. Базовые проверки ---
-    if message.text and message.text.startswith('/'):
-        return
-    if is_blacklisted(message.from_user.id):
-        return
-    if len(message.text) > 300:
-        return
-    
-    # Проверяем, не в процессе ли создания тикета
-    try:
-        state = await dp.fsm.get_context(chat=message.chat.id, user=message.from_user.id)
-        current_state = await state.get_state()
-        if current_state == CreateTicketStates.waiting_for_ticket_text:
-            return
-    except:
-        pass
 
-    # --- 2. Проверяем API-ключ ---
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        print("❌ GEMINI_API_KEY не найден в переменных окружения Render!")
-        return
 
-    # --- 3. Инициализируем клиент Gemini ---
-    genai_client = genai.Client(api_key=api_key)
 
-    # --- 4. Показываем статус "печатает..." ---
-    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
-    try:
-        # --- 5. Запрос к Gemini (синхронный, запускаем в потоке) ---
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: genai_client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=message.text,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction="Ты вежливый и полезный помощник службы поддержки ARVION. Отвечай кратко и по делу. Если вопрос сложный или ты не уверен в ответе, предложи пользователю создать официальный тикет через команду /create_ticket."
-                )
-            )
-        )
-        
-        answer = response.text
-        
-        # --- 6. Отправляем ответ ---
-        if len(answer) > 4000:
-            for i in range(0, len(answer), 4000):
-                await message.answer(answer[i:i+4000])
-        else:
-            await message.answer(answer)
 
-    except Exception as e:
-        print(f"❌ Gemini ошибка: {e}")
+#################################################################################################################################################################################################################################################################################################################################
+
+
+
+
+
+
 
 # ========== ОБРАБОТЧИКИ ТИКЕТОВ ==========
 @dp.callback_query(F.data.startswith("type_"))
