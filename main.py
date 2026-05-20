@@ -26,7 +26,7 @@ ADMIN_IDS = [1781331191]
 
 # Google Sheets
 SPREADSHEET_ID = "1Z70dNBhBC6Qb84Tiig8PJWaTpU3YoN_QC-zdEb4hzfM"
-CREDENTIALS_FILE = r"C:\Users\WWW\Desktop\TicketSupportBot\credentials.json"
+CREDENTIALS_FILE = "credentials.json"
 # ===========================================
 
 # Google Sheets
