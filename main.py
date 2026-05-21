@@ -986,17 +986,37 @@ async def cmd_unblacklist(message: types.Message):
     await send_new_message(message.chat.id, "Введите `/unblacklist ID` (например, /unblacklist 123456789)")
 
 @dp.message(Command("unblacklist"))
-async def unblacklist_by_id(message: types.Message):
+async def cmd_unblacklist(message: types.Message):
     if not is_admin(message.from_user.id):
+        await send_new_message(message.chat.id, "⛔ Только для админов!")
         return
     args = message.text.split()
-    if len(args) != 2 or not args[1].isdigit():
-        await send_new_message(message.chat.id, "❌ Используйте: /unblacklist ID")
+    # Если указан ID — удаляем
+    if len(args) == 2 and args[1].isdigit():
+        user_id = int(args[1])
+        db.remove_from_blacklist(user_id)
+        await send_new_message(message.chat.id, f"✅ Пользователь {user_id} удалён из чёрного списка.")
         return
-    user_id = int(args[1])
-    db.remove_from_blacklist(user_id)
-    await send_new_message(message.chat.id, f"✅ Пользователь {user_id} удалён из чёрного списка.")
+    # Иначе показываем список с пагинацией
+    blacklist = db.get_blacklist()
+    if not blacklist:
+        await send_new_message(message.chat.id, "📭 Чёрный список пуст.")
+        return
+    items = [{"user_id": row[0], "reason": row[1]} for row in blacklist]
 
+    # Асинхронная функция для формирования текста страницы (без await в лямбде)
+    async def format_blacklist_page(page_items, page, total):
+        lines = []
+        for i, u in enumerate(page_items):
+            name = await get_user_display_name(u['user_id'])
+            lines.append(f"{i+1}. {name} (ID: {u['user_id']})")
+        header = f"🚫 ВЫБЕРИТЕ ПОЛЬЗОВАТЕЛЯ ДЛЯ РАЗБЛОКИРОВКИ\n\nСтраница {page} из {total}\n\n"
+        return header + "\n".join(lines)
+
+    pagination_data[message.chat.id] = {"items": items, "page": 0, "message_id": None}
+    await show_page(message.chat.id, 0, items, 5, format_blacklist_page, lambda: None)
+    await send_new_message(message.chat.id, "Введите `/unblacklist ID` (например, /unblacklist 123456789) для удаления.")
+    
 # ========== ОСТАЛЬНЫЕ КОМАНДЫ (статистика, шаблоны, экспорт и т.д.) ==========
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
