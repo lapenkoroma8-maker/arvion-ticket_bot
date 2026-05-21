@@ -7,6 +7,7 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
+    # Тикеты
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS tickets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,9 +18,11 @@ def init_db():
         status TEXT DEFAULT 'open',
         assigned_to INTEGER DEFAULT NULL,
         created_at TEXT,
-        closed_at TEXT DEFAULT NULL
+        closed_at TEXT DEFAULT NULL,
+        closed_by INTEGER DEFAULT NULL
     )
     ''')
+    # Сообщения
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,6 +34,7 @@ def init_db():
         created_at TEXT
     )
     ''')
+    # Назначенные тикеты
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS assigned_tickets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,9 +43,17 @@ def init_db():
         assigned_at TEXT
     )
     ''')
+    # Роли
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS roles (
+        user_id INTEGER PRIMARY KEY,
+        role TEXT NOT NULL
+    )
+    ''')
     conn.commit()
     conn.close()
 
+# ---- Тикеты ----
 def create_ticket(ticket_id, user_id, username, text):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -117,7 +129,7 @@ def get_all_tickets():
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-    SELECT id, ticket_id, user_id, username, text, status, created_at, closed_at, assigned_to
+    SELECT id, ticket_id, user_id, username, text, status, created_at, closed_at, assigned_to, closed_by
     FROM tickets 
     ORDER BY created_at DESC
     ''')
@@ -158,5 +170,24 @@ def get_messages(ticket_id):
     conn.close()
     return rows
 
-# Инициализация базы данных
+# ---- Роли ----
+def set_role(user_id: int, role: str):
+    conn = get_db_connection()
+    conn.execute("INSERT OR REPLACE INTO roles (user_id, role) VALUES (?, ?)", (user_id, role))
+    conn.commit()
+    conn.close()
+
+def get_role(user_id: int) -> str:
+    conn = get_db_connection()
+    row = conn.execute("SELECT role FROM roles WHERE user_id = ?", (user_id,)).fetchone()
+    conn.close()
+    return row[0] if row else "user"
+
+def get_all_roles():
+    conn = get_db_connection()
+    rows = conn.execute("SELECT user_id, role FROM roles").fetchall()
+    conn.close()
+    return dict(rows)
+
+# Инициализация
 init_db()
