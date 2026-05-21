@@ -7,7 +7,6 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Тикеты
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS tickets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +20,6 @@ def init_db():
         closed_at TEXT DEFAULT NULL
     )
     ''')
-    # Сообщения
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,7 +31,6 @@ def init_db():
         created_at TEXT
     )
     ''')
-    # Назначенные тикеты
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS assigned_tickets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,14 +39,12 @@ def init_db():
         assigned_at TEXT
     )
     ''')
-    # Роли (admin / moderator)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS roles (
         user_id INTEGER PRIMARY KEY,
         role TEXT NOT NULL
     )
     ''')
-    # Заметки (только для персонала)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS notes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,7 +54,6 @@ def init_db():
         created_at TEXT
     )
     ''')
-    # Чёрный список
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS blacklist (
         user_id INTEGER PRIMARY KEY,
@@ -70,7 +64,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ---- Тикеты ----
 def create_ticket(ticket_id, user_id, username, text):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -187,7 +180,6 @@ def get_messages(ticket_id):
     conn.close()
     return rows
 
-# ---- Роли ----
 def set_role(user_id: int, role: str):
     conn = get_db_connection()
     conn.execute("INSERT OR REPLACE INTO roles (user_id, role) VALUES (?, ?)", (user_id, role))
@@ -206,7 +198,6 @@ def get_all_roles():
     conn.close()
     return dict(rows)
 
-# ---- Заметки ----
 def add_note(ticket_id: str, admin_id: int, text: str):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -227,7 +218,6 @@ def get_notes(ticket_id: str):
     conn.close()
     return rows
 
-# ---- Чёрный список ----
 def add_to_blacklist(user_id: int, reason: str = ""):
     conn = get_db_connection()
     conn.execute("INSERT OR REPLACE INTO blacklist (user_id, reason, created_at) VALUES (?, ?, ?)",

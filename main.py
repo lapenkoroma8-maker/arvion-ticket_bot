@@ -42,7 +42,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# ========== АНАЛИЗ ТОНАЛЬНОСТИ (расширенный список оскорблений) ==========
+# ========== АНАЛИЗ ТОНАЛЬНОСТИ ==========
 NEGATIVE_WORDS = [
     'уёбище', 'уебище', 'ублюдок', 'урод', 'мудак', 'мудила', 'пиздюк', 'гондон',
     'пидор', 'педик', 'пидорас', 'петух', 'козёл', 'скотина', 'быдло', 'чмо',
@@ -315,7 +315,8 @@ async def main():
     await start_webhook_server()
     await asyncio.Event().wait()
 
-
+# ========== ОСНОВНЫЕ ХЕНДЛЕРЫ (ПРОДОЛЖЕНИЕ В ЧАСТИ 2) ==========
+# Часть 2 будет содержать все команды /start, /create_ticket и т.д.
 # ========== КОМАНДЫ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ==========
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -340,7 +341,7 @@ async def cmd_start(message: types.Message):
     )
 
 @dp.message(Command("create_ticket"))
-async def cmd_create_ticket(message: types.Message):
+async def cmd_create_ticket(message: types.Message, state: FSMContext):
     if db.is_blacklisted(message.from_user.id):
         await send_new_message(message.chat.id, "⛔ Вы заблокированы!")
         return
@@ -467,23 +468,26 @@ async def process_successful_payment(message: types.Message):
     log_action(message.from_user.id, message.from_user.username or "user", "ДОНАТ", details=f"Сумма: {message.successful_payment.total_amount} Stars")
 
 # ========== УПРАВЛЕНИЕ МОДЕРАТОРАМИ ==========
+class AddModerator(StatesGroup):
+    waiting_username = State()
+
 @dp.message(Command("new_moderator"))
-async def cmd_new_moderator(message: types.Message):
+async def cmd_new_moderator(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await send_new_message(message.chat.id, "⛔ Только администратор может назначать модераторов.")
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="cancel_new_moderator")]])
     await send_new_message(message.chat.id, "📌 Отправьте username пользователя (например, @ivan) или его Telegram ID.\nОн будет назначен модератором.", reply_markup=kb)
-    await dp.fsm.set_state(message.chat.id, "waiting_moderator_username")
+    await state.set_state(AddModerator.waiting_username)
 
 @dp.callback_query(F.data == "cancel_new_moderator")
-async def cancel_new_moderator(callback: types.CallbackQuery):
+async def cancel_new_moderator(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    await dp.fsm.set_state(callback.message.chat.id, None)
+    await state.clear()
     await callback.message.delete()
     await cmd_start(callback.message)
 
-@dp.message(StateFilter("waiting_moderator_username"))
+@dp.message(AddModerator.waiting_username)
 async def process_moderator_username(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await state.clear()
@@ -525,41 +529,18 @@ async def cmd_del_moderator(message: types.Message):
     if not staff:
         await send_new_message(message.chat.id, "📭 Нет других администраторов или модераторов.")
         return
-    # Пагинация по 5
     items = staff
     pagination_data[message.chat.id] = {"items": items, "page": 0, "message_id": None}
     await show_page(message.chat.id, 0, items, 5,
                     lambda page_items, page, total: "📋 ВЫБЕРИТЕ ПОЛЬЗОВАТЕЛЯ ДЛЯ УДАЛЕНИЯ\n\n" + "\n".join([f"{i+1}. @{u['name']} ({u['role']})" for i, u in enumerate(page_items)]),
                     lambda: None)
 
-@dp.callback_query(F.data.startswith("page_"))
-async def page_callback(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    if len(parts) != 3:
-        await callback.answer()
-        return
-    chat_id = int(parts[1])
-    new_page = int(parts[2])
-    data = pagination_data.get(chat_id)
-    if not data:
-        await callback.answer("❌ Данные устарели, введите команду заново.")
-        return
-    items = data["items"]
-    per_page = 5
-    total_pages = (len(items) + per_page - 1) // per_page
-    if new_page < 0 or new_page >= total_pages:
-        await callback.answer()
-        return
-    await show_page(chat_id, new_page, items, per_page,
-                    lambda page_items, page, total: "📋 ВЫБЕРИТЕ ПОЛЬЗОВАТЕЛЯ ДЛЯ УДАЛЕНИЯ\n\n" + "\n".join([f"{i+1}. @{u['name']} ({u['role']})" for i, u in enumerate(page_items)]),
-                    lambda: None)
-    await callback.answer()
-
-# Далее обработчик выбора пользователя для удаления – нужно добавить ещё одну пагинацию с кнопками выбора.
-# Это будет в третьей части.
-
-
 # ========== ОБРАБОТЧИКИ ТИКЕТОВ ==========
+class TicketState(StatesGroup):
+    waiting_text = State()
+    waiting_reply = State()
+    waiting_user_reply = State()
+
 @dp.callback_query(F.data.startswith("type_"))
 async def process_type_selection(callback: types.CallbackQuery, state: FSMContext):
     if db.is_blacklisted(callback.from_user.id):
@@ -576,7 +557,7 @@ async def process_type_selection(callback: types.CallbackQuery, state: FSMContex
         "other": "📌 ОБРАЩЕНИЕ (ДРУГОЕ) | ARVION\n\nDiscord тег: \nTelegram username: \nСуть обращения: \nПодробности:"
     }.get(type_key, "Опишите проблему")
     await send_new_message(callback.message.chat.id, f"{template}\n\n➡️ Заполните форму и отправьте одним сообщением", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_type_selection")]]))
-    await state.set_state("waiting_for_ticket_text")
+    await state.set_state(TicketState.waiting_text)
 
 @dp.callback_query(F.data == "back_to_type_selection")
 async def back_to_type_selection(callback: types.CallbackQuery, state: FSMContext):
@@ -592,7 +573,7 @@ async def back_to_type_selection(callback: types.CallbackQuery, state: FSMContex
     ])
     await send_new_message(callback.message.chat.id, "📌 Выберите тип обращения:", reply_markup=kb)
 
-@dp.message(StateFilter("waiting_for_ticket_text"))
+@dp.message(TicketState.waiting_text)
 async def process_ticket_message(message: types.Message, state: FSMContext):
     if db.is_blacklisted(message.from_user.id):
         await send_new_message(message.chat.id, "⛔ Вы заблокированы!")
@@ -630,6 +611,12 @@ async def process_ticket_message(message: types.Message, state: FSMContext):
             ticket_text += f"\n\n📎 [{message.document.file_name}]"
         db.save_message(ticket_id, "user", ticket_text, file_id, file_type)
         if sheet:
+            def add_to_google_sheets(tid, uid, uname, ttype, txt, stat, flink):
+                try:
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    sheet.append_row([now, tid, uid, uname, ttype, txt, stat, "", flink])
+                except Exception as e:
+                    print(f"Ошибка Google Sheets: {e}")
             add_to_google_sheets(ticket_id, user_id, username_raw, ticket_type, ticket_text[:500], "open", file_link)
         await send_new_message(message.chat.id, f"✅ Обращение #{ticket_id} принято!")
         sentiment_emoji, sentiment_text = analyze_sentiment(ticket_text)
@@ -729,17 +716,22 @@ async def close_ticket(callback: types.CallbackQuery):
         await callback.answer("⛔ Нет прав!", show_alert=True)
         return
     ticket_id = callback.data.split("_")[1]
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        await callback.answer("❌ Тикет не найден")
+        return
+    if ticket[5] == "waiting_rating":
+        await callback.answer("⏳ Пользователь ещё не оценил тикет", show_alert=True)
+        return
     assigned = db.get_assigned_admin(ticket_id)
     if assigned != callback.from_user.id:
         await callback.answer("❌ Тикет принят другим!", show_alert=True)
         return
     db.update_ticket_status(ticket_id, "waiting_rating")
-    ticket = db.get_ticket(ticket_id)
-    if ticket:
-        user_id = ticket[2]
-        await bot.send_message(user_id,
-            f"🔒 Тикет #{ticket_id} ожидает закрытия.\n\nПожалуйста, оцените работу администратора:",
-            reply_markup=get_rating_keyboard(ticket_id))
+    user_id = ticket[2]
+    await bot.send_message(user_id,
+        f"🔒 Тикет #{ticket_id} ожидает закрытия.\n\nПожалуйста, оцените работу администратора:",
+        reply_markup=get_rating_keyboard(ticket_id))
     await callback.answer("✅ Запрос оценки отправлен пользователю")
     await callback.message.edit_reply_markup(reply_markup=None)
     log_action(callback.from_user.id, callback.from_user.username or "admin", "ЗАПРОС ОЦЕНКИ", ticket_id)
@@ -771,6 +763,13 @@ async def process_rating(callback: types.CallbackQuery):
         db.update_ticket_status(ticket_id, "closed")
         db.unassign_ticket(ticket_id)
         if sheet:
+            def update_rating_in_google_sheets(tid, rat):
+                try:
+                    cell = sheet.find(tid, in_column=2)
+                    if cell:
+                        sheet.update_cell(cell.row, 9, rat)
+                except Exception as e:
+                    print(f"Ошибка Google Sheets: {e}")
             update_rating_in_google_sheets(ticket_id, rating)
         await callback.answer(f"⭐ Спасибо за оценку {rating}!")
         await callback.message.edit_text(f"✅ Тикет #{ticket_id} закрыт. Спасибо за оценку {rating}⭐!")
@@ -783,192 +782,212 @@ async def process_rating(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Нельзя оценить самого себя!", show_alert=True)
 
-# ========== ЗАМЕТКИ ==========
-@dp.message(Command("note"))
-async def cmd_note(message: types.Message):
-    if not is_moderator(message.from_user.id):
-        await send_new_message(message.chat.id, "⛔ Нет прав!")
+@dp.callback_query(F.data.startswith("admin_reply_"))
+async def admin_reply(callback: types.CallbackQuery, state: FSMContext):
+    role = db.get_role(callback.from_user.id)
+    if role not in ["admin", "moderator"]:
+        await callback.answer("⛔ Нет прав!", show_alert=True)
         return
-    # Нужно определить текущий принятый тикет у пользователя
-    all_tickets = db.get_all_tickets()
-    my_ticket = None
-    for t in all_tickets:
-        if t[8] == message.from_user.id and t[5] in ["open", "waiting_rating"]:
-            my_ticket = t
-            break
-    if not my_ticket:
-        await send_new_message(message.chat.id, "❌ У вас нет принятых открытых тикетов.")
+    ticket_id = callback.data.split("_")[2]
+    assigned = db.get_assigned_admin(ticket_id)
+    if assigned != callback.from_user.id:
+        await callback.answer("❌ Тикет принят другим!", show_alert=True)
         return
-    ticket_id = my_ticket[1]
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await send_new_message(message.chat.id, "❌ Укажите текст заметки: `/note текст`", parse_mode="Markdown")
-        return
-    note_text = args[1]
-    db.add_note(ticket_id, message.from_user.id, note_text)
-    await send_new_message(message.chat.id, "✅ Заметка добавлена (видна только персоналу).")
-    log_action(message.from_user.id, message.from_user.username or "admin", "ДОБАВИЛ ЗАМЕТКУ", ticket_id)
-
-@dp.message(Command("notes"))
-async def cmd_notes(message: types.Message):
-    if not is_moderator(message.from_user.id):
-        await send_new_message(message.chat.id, "⛔ Нет прав!")
-        return
-    all_tickets = db.get_all_tickets()
-    my_ticket = None
-    for t in all_tickets:
-        if t[8] == message.from_user.id and t[5] in ["open", "waiting_rating"]:
-            my_ticket = t
-            break
-    if not my_ticket:
-        await send_new_message(message.chat.id, "❌ У вас нет принятых открытых тикетов.")
-        return
-    ticket_id = my_ticket[1]
-    notes = db.get_notes(ticket_id)
-    if not notes:
-        await send_new_message(message.chat.id, "📭 Заметок по этому тикету нет.")
-        return
-    text = f"📝 ЗАМЕТКИ ПО ТИКЕТУ {ticket_id}:\n\n"
-    for n in notes:
-        admin_id, note_text, created_at = n
-        admin_name = await get_user_display_name(admin_id)
-        try:
-            created = datetime.fromisoformat(created_at).strftime("%d.%m %H:%M")
-        except:
-            created = created_at[:16]
-        text += f"[{created}] @{admin_name}: {note_text}\n"
-    await send_new_message(message.chat.id, text)
-
-# ========== СТАТИСТИКА ПО АДМИНАМ ==========
-@dp.message(Command("admin_stats"))
-async def cmd_admin_stats(message: types.Message):
-    if not is_moderator(message.from_user.id):
-        await send_new_message(message.chat.id, "⛔ Нет прав!")
-        return
-    ratings = load_ratings()
-    stats = []
-    for admin_id, data in ratings.items():
-        role = data.get("role", db.get_role(admin_id))
-        if role not in ["admin", "moderator"]:
-            continue
-        avg, count = await get_user_rating(admin_id)
-        name = data["username"] if data["username"] != str(admin_id) else await get_user_display_name(admin_id)
-        stats.append((name, avg, count, role))
-    if not stats:
-        await send_new_message(message.chat.id, "📊 Нет данных о работе персонала.")
-        return
-    stats.sort(key=lambda x: x[1], reverse=True)
-    text = "📊 СТАТИСТИКА ПЕРСОНАЛА\n\n"
-    for name, avg, count, role in stats:
-        role_icon = "👑" if role == "admin" else "🛡️"
-        text += f"{role_icon} @{name} — {avg} ⭐ ({count} оценок)\n"
-    await send_new_message(message.chat.id, text)
-
-# ========== HELP (группировка) ==========
-@dp.message(Command("help"))
-async def cmd_help(message: types.Message):
-    try:
-        await message.delete()
-    except:
-        pass
-    role = db.get_role(message.from_user.id)
-    # Пользовательские команды
-    user_commands = (
-        "📖 ОБЩИЕ КОМАНДЫ\n"
-        "/create_ticket – создать обращение\n"
-        "/my_tickets – мои обращения\n"
-        "/get_user – узнать свой ID\n"
-        "/top_staff – топ персонала\n"
-        "/donate – поддержать проект\n"
-        "/help – эта инструкция\n\n"
-        "После закрытия тикета вы можете оценить работу (1-5⭐).\n"
-        "Анализ тональности автоматически помечает 🔴 негатив, 🟢 позитив, 🟡 нейтрально."
-    )
-    await send_new_message(message.chat.id, user_commands, keep=True)
-    # Модераторские команды
-    if role in ["moderator", "admin"]:
-        mod_commands = (
-            "🛡️ МОДЕРАТОРСКИЕ КОМАНДЫ\n"
-            "/stats – статистика обращений\n"
-            "/search текст – поиск по тикетам\n"
-            "/all_tickets – список открытых тикетов\n"
-            "/templates – показать шаблоны\n"
-            "/transfer @username – передать тикет администратору\n"
-            "/note текст – добавить заметку\n"
-            "/notes – просмотреть заметки\n"
-            "/admin_stats – статистика по персоналу\n"
-            "/top_staff – топ персонала\n\n"
-            "Кнопки под тикетом: Принять, Ответить, Закрыть, Передать."
-        )
-        await send_new_message(message.chat.id, mod_commands, keep=True)
-    # Админские команды
-    if role == "admin":
-        admin_commands = (
-            "👑 АДМИНСКИЕ КОМАНДЫ\n"
-            "/clear_tickets – удалить все тикеты\n"
-            "/export – экспорт тикетов в CSV\n"
-            "/log – история действий\n"
-            "/announce текст – массовая рассылка\n"
-            "/new_moderator – назначить модератора\n"
-            "/del_moderator – удалить модератора\n"
-            "/add_template ключ текст – добавить шаблон\n"
-            "/del_template ключ – удалить шаблон\n"
-            "/list_templates – список шаблонов\n\n"
-            "Кнопки под тикетом: Принять, Посмотреть, Ответить, Закрыть, Передать, В чёрный список."
-        )
-        await send_new_message(message.chat.id, admin_commands, keep=True)
-
-# ========== УПРАВЛЕНИЕ ШАБЛОНАМИ ==========
-@dp.message(Command("add_template"))
-async def cmd_add_template(message: types.Message):
-    if not is_admin(message.from_user.id):
-        await send_new_message(message.chat.id, "⛔ Нет прав!")
-        return
-    args = message.text.split(maxsplit=2)
-    if len(args) < 3:
-        await send_new_message(message.chat.id, "❌ /add_template ключ текст ответа")
-        return
-    key, value = args[1], args[2]
+    await callback.answer()
+    # Показываем клавиатуру с шаблонами (простая версия, без пагинации для простоты)
     templates = load_templates()
-    templates[key] = value
-    save_templates(templates)
-    await send_new_message(message.chat.id, f"✅ Шаблон '{key}' добавлен!")
+    if templates:
+        keyboard = []
+        for k, v in list(templates.items())[:10]:  # максимум 10 шаблонов
+            keyboard.append([InlineKeyboardButton(text=k, callback_data=f"template_{k}_{ticket_id}")])
+        keyboard.append([InlineKeyboardButton(text="✍️ Свой ответ", callback_data=f"custom_reply_{ticket_id}")])
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+        await send_new_message(callback.message.chat.id, "📋 Выберите шаблон или напишите свой ответ:", reply_markup=reply_markup)
+    else:
+        await send_new_message(callback.message.chat.id, f"✍️ Введите ответ для тикета #{ticket_id}:")
+    await state.update_data(reply_ticket_id=ticket_id)
+    await state.set_state(TicketState.waiting_reply)
 
-@dp.message(Command("del_template"))
-async def cmd_del_template(message: types.Message):
+@dp.callback_query(F.data.startswith("template_"))
+async def template_callback(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    if len(parts) < 3:
+        await callback.answer()
+        return
+    template_key = parts[1]
+    ticket_id = parts[2]
+    templates = load_templates()
+    text = templates.get(template_key)
+    if not text:
+        await callback.answer("❌ Шаблон не найден")
+        return
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        await callback.answer("❌ Тикет не найден")
+        return
+    user_id = ticket[2]
+    admin_username = callback.from_user.username or callback.from_user.full_name
+    avg_rating, rating_count = await get_user_rating(callback.from_user.id)
+    rating_text = f" (рейтинг: {avg_rating}/5 ⭐)" if rating_count > 0 else ""
+    role = db.get_role(callback.from_user.id)
+    role_prefix = "👑 АДМИН " if role == "admin" else ""
+    await bot.send_message(user_id, f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{text}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить администратору", callback_data=f"user_reply_{ticket_id}")]]))
+    db.save_message(ticket_id, "admin", text)
+    await callback.answer("✅ Шаблон отправлен")
+    await callback.message.delete()
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("custom_reply_"))
+async def custom_reply(callback: types.CallbackQuery, state: FSMContext):
+    ticket_id = callback.data.split("_")[2]
+    await callback.answer()
+    await send_new_message(callback.message.chat.id, f"✍️ Введите ответ для тикета #{ticket_id}:")
+    await state.update_data(reply_ticket_id=ticket_id)
+    await state.set_state(TicketState.waiting_reply)
+
+@dp.message(TicketState.waiting_reply)
+async def send_admin_reply(message: types.Message, state: FSMContext):
+    role = db.get_role(message.from_user.id)
+    if role not in ["admin", "moderator"]:
+        return
+    data = await state.get_data()
+    ticket_id = data.get("reply_ticket_id")
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        await send_new_message(message.chat.id, "❌ Тикет не найден!")
+        await state.clear()
+        return
+    assigned = db.get_assigned_admin(ticket_id)
+    if assigned != message.from_user.id:
+        await send_new_message(message.chat.id, "❌ Тикет принят другим!")
+        await state.clear()
+        return
+    user_id = ticket[2]
+    reply_text = message.text or ""
+    file_id = None
+    file_type = None
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = "photo"
+        reply_text = message.caption or ""
+    elif message.document:
+        file_id = message.document.file_id
+        file_type = "document"
+        reply_text = message.caption or ""
+    db.save_message(ticket_id, "admin", reply_text, file_id, file_type)
+    avg_rating, rating_count = await get_user_rating(message.from_user.id)
+    rating_text = f" (рейтинг: {avg_rating}/5 ⭐)" if rating_count > 0 else ""
+    admin_username = message.from_user.username or message.from_user.full_name
+    role = db.get_role(message.from_user.id)
+    role_prefix = "👑 АДМИН " if role == "admin" else ""
+    try:
+        if file_id and file_type == "photo":
+            await bot.send_photo(user_id, file_id, caption=f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{reply_text}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить администратору", callback_data=f"user_reply_{ticket_id}")]]))
+        elif file_id and file_type == "document":
+            await bot.send_document(user_id, file_id, caption=f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{reply_text}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить администратору", callback_data=f"user_reply_{ticket_id}")]]))
+        else:
+            await bot.send_message(user_id, f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{reply_text}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить администратору", callback_data=f"user_reply_{ticket_id}")]]))
+        await delete_previous_bot_message(message.chat.id)
+        await send_new_message(message.chat.id, f"✅ Ответ отправлен для #{ticket_id}")
+    except Exception as e:
+        await send_new_message(message.chat.id, f"❌ Ошибка: {e}")
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("user_reply_"))
+async def user_reply(callback: types.CallbackQuery, state: FSMContext):
+    if db.is_blacklisted(callback.from_user.id):
+        await callback.answer("⛔ Вы заблокированы!", show_alert=True)
+        return
+    ticket_id = callback.data.split("_")[2]
+    await callback.answer()
+    await state.update_data(user_reply_ticket_id=ticket_id)
+    await send_new_message(callback.message.chat.id, f"✍️ Ваш ответ по тикету #{ticket_id}:")
+    await state.set_state(TicketState.waiting_user_reply)
+
+@dp.message(TicketState.waiting_user_reply)
+async def send_user_reply(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    ticket_id = data.get("user_reply_ticket_id")
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        await send_new_message(message.chat.id, "❌ Тикет не найден!")
+        await state.clear()
+        return
+    reply_text = message.text or ""
+    file_id = None
+    file_type = None
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = "photo"
+        reply_text = message.caption or ""
+    elif message.document:
+        file_id = message.document.file_id
+        file_type = "document"
+        reply_text = message.caption or ""
+    db.save_message(ticket_id, "user", reply_text, file_id, file_type)
+    assigned_admin = db.get_assigned_admin(ticket_id)
+    if assigned_admin:
+        role = db.get_role(assigned_admin)
+        try:
+            if file_id and file_type == "photo":
+                await bot.send_photo(assigned_admin, file_id, caption=f"💬 Ответ пользователя по #{ticket_id}:\n\n{reply_text}", reply_markup=get_ticket_keyboard(ticket_id, role, True))
+            elif file_id and file_type == "document":
+                await bot.send_document(assigned_admin, file_id, caption=f"💬 Ответ пользователя по #{ticket_id}:\n\n{reply_text}", reply_markup=get_ticket_keyboard(ticket_id, role, True))
+            else:
+                await bot.send_message(assigned_admin, f"💬 Ответ пользователя по #{ticket_id}:\n\n{reply_text}", reply_markup=get_ticket_keyboard(ticket_id, role, True))
+        except Exception as e:
+            print(f"Ошибка админу: {e}")
+    await delete_previous_bot_message(message.chat.id)
+    await send_new_message(message.chat.id, f"✅ Ответ для #{ticket_id} отправлен")
+    await state.clear()
+
+# ========== ЧЁРНЫЙ СПИСОК ==========
+@dp.callback_query(F.data.startswith("blacklist_user_"))
+async def blacklist_user(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Только для админов!", show_alert=True)
+        return
+    ticket_id = callback.data.split("_")[2]
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        await callback.answer("❌ Тикет не найден")
+        return
+    user_id = ticket[2]
+    db.add_to_blacklist(user_id, reason=f"Забанен из тикета {ticket_id} админом {callback.from_user.id}")
+    await callback.answer("✅ Пользователь добавлен в чёрный список")
+    await bot.send_message(user_id, "⛔ Вы были добавлены в чёрный список ARVION Support.")
+    log_action(callback.from_user.id, callback.from_user.username or "admin", "ЧЁРНЫЙ СПИСОК", ticket_id, f"User {user_id}")
+
+@dp.message(Command("unblacklist"))
+async def cmd_unblacklist(message: types.Message):
     if not is_admin(message.from_user.id):
-        await send_new_message(message.chat.id, "⛔ Нет прав!")
+        await send_new_message(message.chat.id, "⛔ Только для админов!")
+        return
+    blacklist = db.get_blacklist()
+    if not blacklist:
+        await send_new_message(message.chat.id, "📭 Чёрный список пуст.")
+        return
+    items = [{"user_id": row[0], "reason": row[1]} for row in blacklist]
+    pagination_data[message.chat.id] = {"items": items, "page": 0, "message_id": None}
+    await show_page(message.chat.id, 0, items, 5,
+                    lambda page_items, page, total: "🚫 ВЫБЕРИТЕ ПОЛЬЗОВАТЕЛЯ ДЛЯ РАЗБЛОКИРОВКИ\n\n" + "\n".join([f"{i+1}. {await get_user_display_name(u['user_id'])} (ID: {u['user_id']})" for i, u in enumerate(page_items)]),
+                    lambda: None)
+    # Упрощённо: после показа списка ожидаем команду /unblacklist ID
+    await send_new_message(message.chat.id, "Введите `/unblacklist ID` (например, /unblacklist 123456789)")
+
+@dp.message(Command("unblacklist"))
+async def unblacklist_by_id(message: types.Message):
+    if not is_admin(message.from_user.id):
         return
     args = message.text.split()
-    if len(args) < 2:
-        await send_new_message(message.chat.id, "❌ /del_template ключ")
+    if len(args) != 2 or not args[1].isdigit():
+        await send_new_message(message.chat.id, "❌ Используйте: /unblacklist ID")
         return
-    key = args[1]
-    templates = load_templates()
-    if key in templates:
-        del templates[key]
-        save_templates(templates)
-        await send_new_message(message.chat.id, f"✅ Шаблон '{key}' удалён!")
-    else:
-        await send_new_message(message.chat.id, f"❌ Шаблон '{key}' не найден.")
+    user_id = int(args[1])
+    db.remove_from_blacklist(user_id)
+    await send_new_message(message.chat.id, f"✅ Пользователь {user_id} удалён из чёрного списка.")
 
-@dp.message(Command("list_templates"))
-async def cmd_list_templates(message: types.Message):
-    if not is_admin(message.from_user.id):
-        await send_new_message(message.chat.id, "⛔ Нет прав!")
-        return
-    templates = load_templates()
-    if not templates:
-        await send_new_message(message.chat.id, "📭 Шаблонов нет.")
-        return
-    # Пагинация по 11 шаблонов
-    items = list(templates.items())
-    pagination_data[message.chat.id] = {"items": items, "page": 0, "message_id": None}
-    await show_page(message.chat.id, 0, items, 11,
-                    lambda page_items, page, total: "📋 СПИСОК ШАБЛОНОВ\n\n" + "\n".join([f"🔹 *{k}*: {v[:50]}..." for k, v in page_items]),
-                    lambda: None)
-
-# ========== ОСТАЛЬНЫЕ КОМАНДЫ ==========
+# ========== ОСТАЛЬНЫЕ КОМАНДЫ (статистика, шаблоны, экспорт и т.д.) ==========
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     role = db.get_role(message.from_user.id)
@@ -1132,6 +1151,54 @@ async def cmd_templates(message: types.Message):
     text = "📋 ШАБЛОНЫ:\n\n" + "\n".join([f"🔹 {k}: {v[:50]}..." for k, v in templates.items()])
     await send_new_message(message.chat.id, text)
 
+@dp.message(Command("add_template"))
+async def cmd_add_template(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await send_new_message(message.chat.id, "⛔ Нет прав!")
+        return
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        await send_new_message(message.chat.id, "❌ /add_template ключ текст ответа")
+        return
+    key, value = args[1], args[2]
+    templates = load_templates()
+    templates[key] = value
+    save_templates(templates)
+    await send_new_message(message.chat.id, f"✅ Шаблон '{key}' добавлен!")
+
+@dp.message(Command("del_template"))
+async def cmd_del_template(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await send_new_message(message.chat.id, "⛔ Нет прав!")
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        await send_new_message(message.chat.id, "❌ /del_template ключ")
+        return
+    key = args[1]
+    templates = load_templates()
+    if key in templates:
+        del templates[key]
+        save_templates(templates)
+        await send_new_message(message.chat.id, f"✅ Шаблон '{key}' удалён!")
+    else:
+        await send_new_message(message.chat.id, f"❌ Шаблон '{key}' не найден.")
+
+@dp.message(Command("list_templates"))
+async def cmd_list_templates(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await send_new_message(message.chat.id, "⛔ Нет прав!")
+        return
+    templates = load_templates()
+    if not templates:
+        await send_new_message(message.chat.id, "📭 Шаблонов нет.")
+        return
+    items = list(templates.items())
+    pagination_data[message.chat.id] = {"items": items, "page": 0, "message_id": None}
+    await show_page(message.chat.id, 0, items, 11,
+                    lambda page_items, page, total: "📋 СПИСОК ШАБЛОНОВ\n\n" + "\n".join([f"🔹 *{k}*: {v[:50]}..." for k, v in page_items]),
+                    lambda: None)
+
 @dp.message(Command("transfer"))
 async def cmd_transfer(message: types.Message):
     role = db.get_role(message.from_user.id)
@@ -1149,7 +1216,6 @@ async def cmd_transfer(message: types.Message):
     except:
         await send_new_message(message.chat.id, f"❌ Пользователь @{username} не найден.")
         return
-    # Ищем принятый тикет у отправителя
     tickets = db.get_all_tickets()
     my_ticket = None
     for t in tickets:
@@ -1169,246 +1235,135 @@ async def cmd_transfer(message: types.Message):
     await send_new_message(message.chat.id, f"✅ Тикет #{ticket_id} передан @{username}")
     log_action(message.from_user.id, message.from_user.username or "admin", "ПЕРЕДАЛ ТИКЕТ", ticket_id, f"Кому: {target_id}")
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ GOOGLE SHEETS ==========
-def add_to_google_sheets(ticket_id, user_id, username, ticket_type, text, status, file_link):
-    if not sheet:
+@dp.message(Command("note"))
+async def cmd_note(message: types.Message):
+    if not is_moderator(message.from_user.id):
+        await send_new_message(message.chat.id, "⛔ Нет прав!")
         return
-    try:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        sheet.append_row([now, ticket_id, user_id, username, ticket_type, text, status, "", ""])
-    except Exception as e:
-        print(f"Ошибка Google Sheets: {e}")
+    tickets = db.get_all_tickets()
+    my_ticket = None
+    for t in tickets:
+        if t[8] == message.from_user.id and t[5] in ["open", "waiting_rating"]:
+            my_ticket = t
+            break
+    if not my_ticket:
+        await send_new_message(message.chat.id, "❌ У вас нет принятых открытых тикетов.")
+        return
+    ticket_id = my_ticket[1]
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await send_new_message(message.chat.id, "❌ Укажите текст заметки: `/note текст`", parse_mode="Markdown")
+        return
+    note_text = args[1]
+    db.add_note(ticket_id, message.from_user.id, note_text)
+    await send_new_message(message.chat.id, "✅ Заметка добавлена (видна только персоналу).")
+    log_action(message.from_user.id, message.from_user.username or "admin", "ДОБАВИЛ ЗАМЕТКУ", ticket_id)
 
-def update_rating_in_google_sheets(ticket_id, rating):
-    if not sheet:
+@dp.message(Command("notes"))
+async def cmd_notes(message: types.Message):
+    if not is_moderator(message.from_user.id):
+        await send_new_message(message.chat.id, "⛔ Нет прав!")
         return
-    try:
-        cell = sheet.find(ticket_id, in_column=2)
-        if cell:
-            sheet.update_cell(cell.row, 9, rating)
-    except Exception as e:
-        print(f"Ошибка Google Sheets: {e}")
-
-# ========== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ (ответы админа, передача, чёрный список) ==========
-@dp.callback_query(F.data.startswith("admin_reply_"))
-async def admin_reply(callback: types.CallbackQuery, state: FSMContext):
-    role = db.get_role(callback.from_user.id)
-    if role not in ["admin", "moderator"]:
-        await callback.answer("⛔ Нет прав!", show_alert=True)
+    tickets = db.get_all_tickets()
+    my_ticket = None
+    for t in tickets:
+        if t[8] == message.from_user.id and t[5] in ["open", "waiting_rating"]:
+            my_ticket = t
+            break
+    if not my_ticket:
+        await send_new_message(message.chat.id, "❌ У вас нет принятых открытых тикетов.")
         return
-    ticket_id = callback.data.split("_")[2]
-    assigned = db.get_assigned_admin(ticket_id)
-    if assigned != callback.from_user.id:
-        await callback.answer("❌ Тикет принят другим!", show_alert=True)
+    ticket_id = my_ticket[1]
+    notes = db.get_notes(ticket_id)
+    if not notes:
+        await send_new_message(message.chat.id, "📭 Заметок по этому тикету нет.")
         return
-    await callback.answer()
-    # Клавиатура с шаблонами (пагинация по 11)
-    templates = load_templates()
-    if templates:
-        items = list(templates.items())
-        pagination_data[callback.message.chat.id] = {"items": items, "page": 0, "message_id": None, "ticket_id": ticket_id}
-        await show_page(callback.message.chat.id, 0, items, 11,
-                        lambda page_items, page, total: "📋 ВЫБЕРИТЕ ШАБЛОН\n\n" + "\n".join([f"🔹 {k}" for k, v in page_items]),
-                        lambda: [InlineKeyboardButton(text="✍️ Свой ответ", callback_data=f"custom_reply_{ticket_id}")])
-    else:
-        await send_new_message(callback.message.chat.id, f"✍️ Введите ответ для тикета #{ticket_id}:")
-    await state.update_data(reply_ticket_id=ticket_id)
-    await state.set_state("waiting_for_reply")
-
-@dp.callback_query(F.data.startswith("template_"))
-async def template_callback(callback: types.CallbackQuery, state: FSMContext):
-    # Здесь надо извлечь ключ шаблона – формат data: template_{key}_{ticket_id}
-    parts = callback.data.split("_")
-    if len(parts) < 2:
-        await callback.answer()
-        return
-    template_key = parts[1]
-    ticket_id = parts[2] if len(parts) > 2 else None
-    if not ticket_id:
-        await callback.answer()
-        return
-    templates = load_templates()
-    text = templates.get(template_key)
-    if not text:
-        await callback.answer("❌ Шаблон не найден")
-        return
-    # Отправить ответ пользователю
-    ticket = db.get_ticket(ticket_id)
-    if not ticket:
-        await callback.answer("❌ Тикет не найден")
-        return
-    user_id = ticket[2]
-    admin_username = callback.from_user.username or callback.from_user.full_name
-    avg_rating, rating_count = await get_user_rating(callback.from_user.id)
-    rating_text = f" (рейтинг: {avg_rating}/5 ⭐)" if rating_count > 0 else " (рейтинг: 0/5 ⭐)"
-    role = db.get_role(callback.from_user.id)
-    role_prefix = "👑 АДМИН " if role == "admin" else ""
-    await bot.send_message(user_id, f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{text}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить администратору", callback_data=f"user_reply_{ticket_id}")]]))
-    db.save_message(ticket_id, "admin", text)
-    await callback.answer("✅ Шаблон отправлен")
-    await callback.message.delete()
-    await state.clear()
-
-@dp.callback_query(F.data.startswith("custom_reply_"))
-async def custom_reply(callback: types.CallbackQuery, state: FSMContext):
-    ticket_id = callback.data.split("_")[2]
-    await callback.answer()
-    await send_new_message(callback.message.chat.id, f"✍️ Введите ответ для тикета #{ticket_id}:")
-    await state.update_data(reply_ticket_id=ticket_id)
-    await state.set_state("waiting_for_reply")
-
-@dp.message(StateFilter("waiting_for_reply"))
-async def send_admin_reply(message: types.Message, state: FSMContext):
-    role = db.get_role(message.from_user.id)
-    if role not in ["admin", "moderator"]:
-        return
-    data = await state.get_data()
-    ticket_id = data.get("reply_ticket_id")
-    ticket = db.get_ticket(ticket_id)
-    if not ticket:
-        await send_new_message(message.chat.id, "❌ Тикет не найден!")
-        await state.clear()
-        return
-    assigned = db.get_assigned_admin(ticket_id)
-    if assigned != message.from_user.id:
-        await send_new_message(message.chat.id, "❌ Тикет принят другим!")
-        await state.clear()
-        return
-    user_id = ticket[2]
-    reply_text = message.text or ""
-    file_id = None
-    file_type = None
-    if message.photo:
-        file_id = message.photo[-1].file_id
-        file_type = "photo"
-        reply_text = message.caption or ""
-    elif message.document:
-        file_id = message.document.file_id
-        file_type = "document"
-        reply_text = message.caption or ""
-    db.save_message(ticket_id, "admin", reply_text, file_id, file_type)
-    avg_rating, rating_count = await get_user_rating(message.from_user.id)
-    rating_text = f" (рейтинг: {avg_rating}/5 ⭐)" if rating_count > 0 else " (рейтинг: 0/5 ⭐)"
-    admin_username = message.from_user.username or message.from_user.full_name
-    role = db.get_role(message.from_user.id)
-    role_prefix = "👑 АДМИН " if role == "admin" else ""
-    try:
-        if file_id and file_type == "photo":
-            await bot.send_photo(user_id, file_id, caption=f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{reply_text}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить администратору", callback_data=f"user_reply_{ticket_id}")]]))
-        elif file_id and file_type == "document":
-            await bot.send_document(user_id, file_id, caption=f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{reply_text}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить администратору", callback_data=f"user_reply_{ticket_id}")]]))
-        else:
-            await bot.send_message(user_id, f"{role_prefix}👨‍💼 {role.capitalize()} @{admin_username}{rating_text} ответил:\n\n{reply_text}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить администратору", callback_data=f"user_reply_{ticket_id}")]]))
-        await delete_previous_bot_message(message.chat.id)
-        await send_new_message(message.chat.id, f"✅ Ответ отправлен для #{ticket_id}")
-    except Exception as e:
-        await send_new_message(message.chat.id, f"❌ Ошибка: {e}")
-    await state.clear()
-
-@dp.callback_query(F.data.startswith("user_reply_"))
-async def user_reply(callback: types.CallbackQuery, state: FSMContext):
-    if db.is_blacklisted(callback.from_user.id):
-        await callback.answer("⛔ Вы заблокированы!", show_alert=True)
-        return
-    ticket_id = callback.data.split("_")[2]
-    await callback.answer()
-    await state.update_data(user_reply_ticket_id=ticket_id)
-    await send_new_message(callback.message.chat.id, f"✍️ Ваш ответ по тикету #{ticket_id}:")
-    await state.set_state("waiting_for_user_reply")
-
-@dp.message(StateFilter("waiting_for_user_reply"))
-async def send_user_reply(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    ticket_id = data.get("user_reply_ticket_id")
-    ticket = db.get_ticket(ticket_id)
-    if not ticket:
-        await send_new_message(message.chat.id, "❌ Тикет не найден!")
-        await state.clear()
-        return
-    user_id = message.from_user.id
-    user_username = message.from_user.username or message.from_user.full_name
-    reply_text = message.text or ""
-    file_id = None
-    file_type = None
-    if message.photo:
-        file_id = message.photo[-1].file_id
-        file_type = "photo"
-        reply_text = message.caption or ""
-    elif message.document:
-        file_id = message.document.file_id
-        file_type = "document"
-        reply_text = message.caption or ""
-    db.save_message(ticket_id, "user", reply_text, file_id, file_type)
-    assigned_admin = db.get_assigned_admin(ticket_id)
-    if assigned_admin:
-        role = db.get_role(assigned_admin)
+    text = f"📝 ЗАМЕТКИ ПО ТИКЕТУ {ticket_id}:\n\n"
+    for n in notes:
+        admin_id, note_text, created_at = n
+        admin_name = await get_user_display_name(admin_id)
         try:
-            if file_id and file_type == "photo":
-                await bot.send_photo(assigned_admin, file_id, caption=f"💬 Ответ пользователя по #{ticket_id}:\n\n{reply_text}", reply_markup=get_ticket_keyboard(ticket_id, role, True))
-            elif file_id and file_type == "document":
-                await bot.send_document(assigned_admin, file_id, caption=f"💬 Ответ пользователя по #{ticket_id}:\n\n{reply_text}", reply_markup=get_ticket_keyboard(ticket_id, role, True))
-            else:
-                await bot.send_message(assigned_admin, f"💬 Ответ пользователя по #{ticket_id}:\n\n{reply_text}", reply_markup=get_ticket_keyboard(ticket_id, role, True))
-        except Exception as e:
-            print(f"Ошибка админу: {e}")
-    await delete_previous_bot_message(message.chat.id)
-    await send_new_message(message.chat.id, f"✅ Ответ для #{ticket_id} отправлен")
-    await state.clear()
+            created = datetime.fromisoformat(created_at).strftime("%d.%m %H:%M")
+        except:
+            created = created_at[:16]
+        text += f"[{created}] @{admin_name}: {note_text}\n"
+    await send_new_message(message.chat.id, text)
 
-# ========== ЧЁРНЫЙ СПИСОК (удаление) ==========
-@dp.message(Command("unblacklist"))
-async def cmd_unblacklist(message: types.Message):
-    if not is_admin(message.from_user.id):
-        await send_new_message(message.chat.id, "⛔ Только для админов!")
+@dp.message(Command("admin_stats"))
+async def cmd_admin_stats(message: types.Message):
+    if not is_moderator(message.from_user.id):
+        await send_new_message(message.chat.id, "⛔ Нет прав!")
         return
-    blacklist = db.get_blacklist()
-    if not blacklist:
-        await send_new_message(message.chat.id, "📭 Чёрный список пуст.")
+    ratings = load_ratings()
+    stats = []
+    for admin_id, data in ratings.items():
+        role = data.get("role", db.get_role(admin_id))
+        if role not in ["admin", "moderator"]:
+            continue
+        avg, count = await get_user_rating(admin_id)
+        name = data["username"] if data["username"] != str(admin_id) else await get_user_display_name(admin_id)
+        stats.append((name, avg, count, role))
+    if not stats:
+        await send_new_message(message.chat.id, "📊 Нет данных о работе персонала.")
         return
-    # Подготовим данные для пагинации
-    items = [{"user_id": row[0], "reason": row[1], "created": row[2]} for row in blacklist]
-    pagination_data[message.chat.id] = {"items": items, "page": 0, "message_id": None}
-    await show_page(message.chat.id, 0, items, 5,
-                    lambda page_items, page, total: "🚫 ВЫБЕРИТЕ ПОЛЬЗОВАТЕЛЯ ДЛЯ РАЗБЛОКИРОВКИ\n\n" + "\n".join([f"{i+1}. {await get_user_display_name(u['user_id'])} (ID: {u['user_id']})" for i, u in enumerate(page_items)]),
-                    lambda: None)
+    stats.sort(key=lambda x: x[1], reverse=True)
+    text = "📊 СТАТИСТИКА ПЕРСОНАЛА\n\n"
+    for name, avg, count, role in stats:
+        role_icon = "👑" if role == "admin" else "🛡️"
+        text += f"{role_icon} @{name} — {avg} ⭐ ({count} оценок)\n"
+    await send_new_message(message.chat.id, text)
 
-@dp.callback_query(F.data.startswith("unblacklist_"))
-async def confirm_unblacklist(callback: types.CallbackQuery):
-    # Этот обработчик должен быть вызван после выбора пользователя из списка.
-    # В нашей пагинации мы не сделали кнопки выбора, поэтому сейчас реализуем упрощённо: после показа списка ожидаем ввод ID.
-    # Но для полноты можно сделать, как с удалением модератора. Пока оставим заглушку.
-    await callback.answer("Функция в разработке", show_alert=True)
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    try:
+        await message.delete()
+    except:
+        pass
+    role = db.get_role(message.from_user.id)
+    user_commands = (
+        "📖 ОБЩИЕ КОМАНДЫ\n"
+        "/create_ticket – создать обращение\n"
+        "/my_tickets – мои обращения\n"
+        "/get_user – узнать свой ID\n"
+        "/top_staff – топ персонала\n"
+        "/donate – поддержать проект\n"
+        "/help – эта инструкция\n\n"
+        "После закрытия тикета вы можете оценить работу (1-5⭐).\n"
+        "Анализ тональности автоматически помечает 🔴 негатив, 🟢 позитив, 🟡 нейтрально."
+    )
+    await send_new_message(message.chat.id, user_commands, keep=True)
+    if role in ["moderator", "admin"]:
+        mod_commands = (
+            "🛡️ МОДЕРАТОРСКИЕ КОМАНДЫ\n"
+            "/stats – статистика обращений\n"
+            "/search текст – поиск по тикетам\n"
+            "/all_tickets – список открытых тикетов\n"
+            "/templates – показать шаблоны\n"
+            "/transfer @username – передать тикет администратору\n"
+            "/note текст – добавить заметку\n"
+            "/notes – просмотреть заметки\n"
+            "/admin_stats – статистика по персоналу\n"
+            "/top_staff – топ персонала\n\n"
+            "Кнопки под тикетом: Принять, Ответить, Закрыть, Передать."
+        )
+        await send_new_message(message.chat.id, mod_commands, keep=True)
+    if role == "admin":
+        admin_commands = (
+            "👑 АДМИНСКИЕ КОМАНДЫ\n"
+            "/clear_tickets – удалить все тикеты\n"
+            "/export – экспорт тикетов в CSV\n"
+            "/log – история действий\n"
+            "/announce текст – массовая рассылка\n"
+            "/new_moderator – назначить модератора\n"
+            "/del_moderator – удалить модератора\n"
+            "/add_template ключ текст – добавить шаблон\n"
+            "/del_template ключ – удалить шаблон\n"
+            "/list_templates – список шаблонов\n"
+            "/unblacklist ID – удалить из чёрного списка\n\n"
+            "Кнопки под тикетом: Принять, Посмотреть, Ответить, Закрыть, Передать, В чёрный список."
+        )
+        await send_new_message(message.chat.id, admin_commands, keep=True)
 
-# ========== ПЕРЕДАЧА ТИКЕТА (список персонала) ==========
-@dp.callback_query(F.data.startswith("show_transfer_"))
-async def show_transfer_list(callback: types.CallbackQuery):
-    user_role = db.get_role(callback.from_user.id)
-    if user_role not in ["admin", "moderator"]:
-        await callback.answer("⛔ Нет прав!", show_alert=True)
-        return
-    ticket_id = callback.data.split("_")[2]
-    ticket = db.get_ticket(ticket_id)
-    if not ticket:
-        await callback.answer("❌ Тикет не найден!")
-        return
-    assigned = db.get_assigned_admin(ticket_id)
-    if assigned != callback.from_user.id:
-        await callback.answer("❌ Тикет принят другим!", show_alert=True)
-        return
-    roles = db.get_all_roles()
-    staff = [{"user_id": uid, "name": await get_user_display_name(uid), "role": role} for uid, role in roles.items() if uid != callback.from_user.id]
-    if not staff:
-        await callback.answer("❌ Нет доступных для передачи!", show_alert=True)
-        return
-    pagination_data[callback.message.chat.id] = {"items": staff, "page": 0, "message_id": None, "ticket_id": ticket_id}
-    await show_page(callback.message.chat.id, 0, staff, 5,
-                    lambda page_items, page, total: "📨 ВЫБЕРИТЕ ПОЛУЧАТЕЛЯ\n\n" + "\n".join([f"{i+1}. @{u['name']} ({u['role']})" for i, u in enumerate(page_items)]),
-                    lambda: None)
-
-@dp.callback_query(F.data.startswith("transfer_user_"))
-async def execute_transfer_user(callback: types.CallbackQuery):
-    # Здесь нужно обработать выбор конкретного пользователя.
-    # Для простоты пропустим, так как код и так длинный.
-    await callback.answer("Функция в разработке", show_alert=True)
-
-# ========== ЗАПУСК (уже есть в части 1) ==========
+# ========== ЗАПУСК ==========
+if __name__ == "__main__":
+    asyncio.run(main())
