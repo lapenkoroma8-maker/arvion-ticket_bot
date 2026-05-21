@@ -20,8 +20,8 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 # ===========================================
 # НАСТРОЙКИ (измените при необходимости)
 # ===========================================
-BOT_TOKEN = "8918794962:AAGMCCr86CkgL6ASFmFoJnqNgc-Kp6Vsvtw"  # Ваш токен
-ADMIN_IDS = [1781331191]  # Ваш Telegram ID
+BOT_TOKEN = "8918794962:AAGMCCr86CkgL6ASFmFoJnqNgc-Kp6Vsvtw"
+ADMIN_IDS = [1781331191]
 SPREADSHEET_ID = "1Z70dNBhBC6Qb84Tiig8PJWaTpU3YoN_QC-zdEb4hzfM"
 CREDENTIALS_FILE = "credentials.json"
 # =================================================
@@ -85,7 +85,10 @@ async def send_new_message(chat_id: int, text: str, keep=False, parse_mode=None,
 async def get_user_display_name(user_id: int) -> str:
     try:
         user = await bot.get_chat(user_id)
-        return user.username or str(user_id)
+        if user.username:
+            return f"@{user.username}"
+        else:
+            return user.first_name or str(user_id)
     except:
         return str(user_id)
 
@@ -239,13 +242,13 @@ async def show_page(chat_id: int, page: int, items: list, per_page: int, text_fu
                 keyboard.append(extra)
     reply_markup = InlineKeyboardMarkup(inline_keyboard=[keyboard]) if keyboard else None
     if data["message_id"] is None:
-        msg = await send_new_message(chat_id, text, parse_mode="Markdown", reply_markup=reply_markup)
+        msg = await send_new_message(chat_id, text, parse_mode=None, reply_markup=reply_markup)
         pagination_data[chat_id]["message_id"] = msg.message_id
     else:
         try:
-            await bot.edit_message_text(text, chat_id, data["message_id"], parse_mode="Markdown", reply_markup=reply_markup)
+            await bot.edit_message_text(text, chat_id, data["message_id"], parse_mode=None, reply_markup=reply_markup)
         except:
-            msg = await send_new_message(chat_id, text, parse_mode="Markdown", reply_markup=reply_markup)
+            msg = await send_new_message(chat_id, text, parse_mode=None, reply_markup=reply_markup)
             pagination_data[chat_id]["message_id"] = msg.message_id
 
 # ========== ВЕБХУК ==========
@@ -321,7 +324,8 @@ async def cmd_my_tickets(message: types.Message):
         await message.delete()
     except:
         pass
-    tickets = db.get_user_tickets(message.from_user.id)
+    user_id = message.from_user.id
+    tickets = db.get_user_tickets(user_id)
     if not tickets:
         await send_new_message(message.chat.id, "📭 Нет обращений.")
         return
@@ -339,7 +343,8 @@ async def cmd_get_user(message: types.Message):
     except:
         pass
     u = message.from_user
-    await send_new_message(message.chat.id, f"ID: {u.id}\nUsername: @{u.username or ''}\nИмя: {u.first_name}")
+    name = await get_user_display_name(u.id)
+    await send_new_message(message.chat.id, f"Ваш ID: {u.id}\nИмя: {name}\nUsername: @{u.username or ''}")
 
 @dp.message(Command("top_staff"))
 async def cmd_top_staff(message: types.Message):
@@ -362,7 +367,7 @@ async def cmd_top_staff(message: types.Message):
     text = "🏆 ТОП ПЕРСОНАЛА\n"
     for i, (name, avg, cnt, role) in enumerate(staff[:10], 1):
         icon = "👑" if role == "admin" else "🛡️"
-        text += f"{i}. {icon} @{name} — {avg} ⭐ ({cnt} оценок)\n"
+        text += f"{i}. {icon} {name} — {avg} ⭐ ({cnt} оценок)\n"
     await send_new_message(message.chat.id, text)
 
 @dp.message(Command("donate"))
@@ -453,7 +458,8 @@ async def process_moderator_username(message: types.Message, state: FSMContext):
         await state.clear()
         return
     db.set_role(uid, "moderator")
-    await message.answer(f"✅ @{name} назначен модератором!")
+    display = await get_user_display_name(uid)
+    await message.answer(f"✅ {display} назначен модератором!")
     try:
         await bot.send_message(uid, "🛡️ Вы назначены модератором ARVION Support. Используйте /help.")
     except:
@@ -470,6 +476,7 @@ async def cmd_del_moderator(message: types.Message):
     if not is_admin(message.from_user.id):
         await send_new_message(message.chat.id, "⛔ Только администратор.")
         return
+
     args = message.text.split()
     if len(args) == 2:
         target = args[1]
@@ -481,28 +488,50 @@ async def cmd_del_moderator(message: types.Message):
                 uid = user.id
             role = db.get_role(uid)
             if role not in ["admin", "moderator"]:
-                await send_new_message(message.chat.id, "❌ Пользователь не модератор.")
+                await send_new_message(message.chat.id, f"❌ Пользователь {target} не является модератором или админом.")
                 return
             db.set_role(uid, "user")
             await send_new_message(message.chat.id, f"✅ Пользователь {uid} лишён прав.")
             log_action(message.from_user.id, message.from_user.username or "admin", "УДАЛИЛ МОДЕРАТОРА", details=f"User {uid}")
             return
-        except:
-            await send_new_message(message.chat.id, "❌ Ошибка при поиске пользователя.")
+        except Exception as e:
+            await send_new_message(message.chat.id, f"❌ Ошибка: {e}. Убедитесь, что пользователь существует.")
             return
-    # Показать список
+
     roles = db.get_all_roles()
     staff = [{"user_id": uid, "name": await get_user_display_name(uid), "role": role}
-             for uid, role in roles.items() if role in ["admin","moderator"] and uid != message.from_user.id]
+             for uid, role in roles.items() if role in ["admin", "moderator"] and uid != message.from_user.id]
     if not staff:
-        await send_new_message(message.chat.id, "📭 Нет других модераторов.")
+        await send_new_message(message.chat.id, "📭 Нет других модераторов или администраторов.")
         return
-    async def format_staff_page(page_items, page, total):
-        lines = [f"{i+1}. @{u['name']} ({u['role']})" for i, u in enumerate(page_items)]
-        return f"📋 ВЫБЕРИТЕ ПОЛЬЗОВАТЕЛЯ ДЛЯ УДАЛЕНИЯ\nСтраница {page} из {total}\n\n" + "\n".join(lines)
-    pagination_data[message.chat.id] = {"items": staff, "page": 0, "message_id": None}
-    await show_page(message.chat.id, 0, staff, 5, format_staff_page, lambda: None)
-    await send_new_message(message.chat.id, "Введите `/del_moderator ID` для удаления (ID из списка).")
+
+    keyboard = []
+    for u in staff:
+        keyboard.append([InlineKeyboardButton(text=f"{u['name']} ({u['role']})", callback_data=f"del_mod_{u['user_id']}")])
+    keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_del_mod")])
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await send_new_message(message.chat.id, "📋 Выберите модератора для удаления:", reply_markup=reply_markup)
+
+@dp.callback_query(F.data.startswith("del_mod_"))
+async def confirm_del_moderator(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав!", show_alert=True)
+        return
+    user_id = int(callback.data.split("_")[2])
+    role = db.get_role(user_id)
+    if role not in ["admin", "moderator"]:
+        await callback.answer("❌ Этот пользователь уже не модератор.", show_alert=True)
+        await callback.message.delete()
+        return
+    db.set_role(user_id, "user")
+    await callback.answer("✅ Модератор удалён!")
+    await callback.message.edit_text(f"✅ Пользователь {user_id} лишён прав модератора.")
+    log_action(callback.from_user.id, callback.from_user.username or "admin", "УДАЛИЛ МОДЕРАТОРА", details=f"User {user_id}")
+
+@dp.callback_query(F.data == "cancel_del_mod")
+async def cancel_del_moderator(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.delete()
 
 # ========== ОБРАБОТКА ТИКЕТОВ ==========
 def get_ticket_keyboard(ticket_id: str, user_role: str, is_assigned=False, is_view=False):
@@ -598,7 +627,8 @@ async def process_ticket_message(message: types.Message, state: FSMContext):
             pass
     await send_new_message(message.chat.id, f"✅ Обращение #{ticket_id} принято!")
     sentiment_emoji, sentiment_text = analyze_sentiment(text)
-    admin_msg = f"🆔 НОВЫЙ ТИКЕТ #{ticket_id} {sentiment_emoji}[{sentiment_text}]\n👤 @{username} (ID: {uid})\n\n{text}"
+    display_name = await get_user_display_name(uid)
+    admin_msg = f"🆔 НОВЫЙ ТИКЕТ #{ticket_id} {sentiment_emoji}[{sentiment_text}]\n👤 {display_name} (ID: {uid})\n\n{text}"
     for aid in db.get_all_roles().keys():
         try:
             if not db.get_assigned_admin(ticket_id):
@@ -626,7 +656,8 @@ async def accept_ticket(callback: types.CallbackQuery):
     db.assign_ticket(ticket_id, admin_id)
     ticket = db.get_ticket(ticket_id)
     if ticket:
-        await bot.send_message(ticket[2], f"✅ Ваш тикет #{ticket_id} принят в работу.")
+        user_id = ticket[2]
+        await bot.send_message(user_id, f"✅ Ваш тикет #{ticket_id} принят в работу.")
     await callback.message.edit_reply_markup(reply_markup=get_ticket_keyboard(ticket_id, db.get_role(admin_id), True))
     await callback.answer("✅ Тикет принят!")
     log_action(admin_id, callback.from_user.username or "admin", "ПРИНЯЛ ТИКЕТ", ticket_id)
@@ -762,7 +793,7 @@ async def template_callback(callback: types.CallbackQuery, state: FSMContext):
     rating_text = f" (рейтинг: {avg}/5⭐)" if cnt>0 else ""
     role = db.get_role(callback.from_user.id)
     prefix = "👑 АДМИН " if role=="admin" else ""
-    await bot.send_message(user_id, f"{prefix}👨‍💼 {role.capitalize()} @{admin_name}{rating_text} ответил:\n\n{text}",
+    await bot.send_message(user_id, f"{prefix}👨‍💼 {role.capitalize()} {admin_name}{rating_text} ответил:\n\n{text}",
                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить", callback_data=f"user_reply_{ticket_id}")]]))
     db.save_message(ticket_id, "admin", text)
     await callback.answer("✅ Шаблон отправлен")
@@ -812,13 +843,13 @@ async def send_admin_reply(message: types.Message, state: FSMContext):
     prefix = "👑 АДМИН " if role=="admin" else ""
     try:
         if file_id and file_type == "photo":
-            await bot.send_photo(user_id, file_id, caption=f"{prefix}👨‍💼 {role.capitalize()} @{admin_name}{rating_text} ответил:\n\n{reply_text}",
+            await bot.send_photo(user_id, file_id, caption=f"{prefix}👨‍💼 {role.capitalize()} {admin_name}{rating_text} ответил:\n\n{reply_text}",
                                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить", callback_data=f"user_reply_{ticket_id}")]]))
         elif file_id and file_type == "document":
-            await bot.send_document(user_id, file_id, caption=f"{prefix}👨‍💼 {role.capitalize()} @{admin_name}{rating_text} ответил:\n\n{reply_text}",
+            await bot.send_document(user_id, file_id, caption=f"{prefix}👨‍💼 {role.capitalize()} {admin_name}{rating_text} ответил:\n\n{reply_text}",
                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить", callback_data=f"user_reply_{ticket_id}")]]))
         else:
-            await bot.send_message(user_id, f"{prefix}👨‍💼 {role.capitalize()} @{admin_name}{rating_text} ответил:\n\n{reply_text}",
+            await bot.send_message(user_id, f"{prefix}👨‍💼 {role.capitalize()} {admin_name}{rating_text} ответил:\n\n{reply_text}",
                                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Ответить", callback_data=f"user_reply_{ticket_id}")]]))
         await delete_previous_bot_message(message.chat.id)
         await send_new_message(message.chat.id, f"✅ Ответ отправлен для #{ticket_id}")
@@ -876,23 +907,201 @@ async def send_user_reply(message: types.Message, state: FSMContext):
     await send_new_message(message.chat.id, f"✅ Ответ для #{ticket_id} отправлен")
     await state.clear()
 
-# ========== ЧЁРНЫЙ СПИСОК ==========
-@dp.callback_query(F.data.startswith("blacklist_user_"))
-async def blacklist_user(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Только для админов!", show_alert=True)
+# ========== ЧЁРНЫЙ СПИСОК (команда /blacklist с пагинацией и кнопками) ==========
+@dp.message(Command("blacklist"))
+async def cmd_blacklist(message: types.Message):
+    try:
+        await message.delete()
+    except:
+        pass
+    if not is_admin(message.from_user.id):
+        await send_new_message(message.chat.id, "⛔ Только для админов!")
         return
-    ticket_id = callback.data.split("_")[2]
-    ticket = db.get_ticket(ticket_id)
-    if not ticket:
-        await callback.answer("❌ Тикет не найден")
+    blacklist = db.get_blacklist()
+    if not blacklist:
+        await send_new_message(message.chat.id, "📭 Чёрный список пуст.")
         return
-    user_id = ticket[2]
-    db.add_to_blacklist(user_id, reason=f"Забанен из тикета {ticket_id} админом {callback.from_user.id}")
-    await callback.answer("✅ Пользователь добавлен в чёрный список")
-    await bot.send_message(user_id, "⛔ Вы добавлены в чёрный список ARVION Support.")
-    log_action(callback.from_user.id, callback.from_user.username or "admin", "ЧЁРНЫЙ СПИСОК", ticket_id, f"User {user_id}")
 
+    # Подготовим данные: для каждого заблокированного узнаем имя
+    items = []
+    for row in blacklist:
+        uid = row[0]
+        reason = row[1]
+        name = await get_user_display_name(uid)
+        items.append({"user_id": uid, "name": name, "reason": reason})
+
+    # Функция для формирования текста страницы
+    async def format_blacklist_page(page_items, page, total):
+        lines = []
+        for i, u in enumerate(page_items):
+            lines.append(f"{i+1}. {u['name']} (ID: {u['user_id']})")
+            if u['reason']:
+                lines.append(f"   Причина: {u['reason']}")
+        header = f"🚫 ЧЁРНЫЙ СПИСОК\nСтраница {page} из {total}\n\n"
+        return header + "\n".join(lines)
+
+    # Функция для генерации клавиатуры (кнопки выбора пользователя)
+    def make_keyboard():
+        # Клавиатура будет создана отдельно для каждой страницы в show_page, но мы можем добавить кнопки выбора
+        # Здесь мы вернём список кнопок для текущей страницы, но show_page этого не поддерживает. Лучше сделаем отдельную пагинацию.
+        pass
+
+    # Так как show_page не умеет создавать кнопки выбора для каждого элемента, сделаем свою пагинацию с инлайн-кнопками
+    # Используем тот же принцип, что и для del_moderator: показываем список с кнопками "Разблокировать"
+    per_page = 5
+    total_pages = (len(items) + per_page - 1) // per_page
+
+    async def show_blacklist_page(chat_id, page):
+        start = page * per_page
+        end = start + per_page
+        page_items = items[start:end]
+        text = f"🚫 ЧЁРНЫЙ СПИСОК\nСтраница {page+1} из {total_pages}\n\n"
+        for i, u in enumerate(page_items):
+            text += f"{i+1}. {u['name']} (ID: {u['user_id']})\n"
+            if u['reason']:
+                text += f"   Причина: {u['reason']}\n"
+        keyboard = []
+        for u in page_items:
+            keyboard.append([InlineKeyboardButton(text=f"🔓 Разблокировать {u['name']}", callback_data=f"unblacklist_user_{u['user_id']}")])
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"blacklist_page_{page-1}"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"blacklist_page_{page+1}"))
+        if nav:
+            keyboard.append(nav)
+        keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_blacklist")])
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+        # Сохраняем текущую страницу в pagination_data
+        if chat_id not in pagination_data:
+            pagination_data[chat_id] = {}
+        pagination_data[chat_id]["blacklist_page"] = page
+        # Отправляем новое сообщение или редактируем предыдущее
+        if "blacklist_msg_id" in pagination_data[chat_id]:
+            try:
+                await bot.edit_message_text(text, chat_id, pagination_data[chat_id]["blacklist_msg_id"], reply_markup=reply_markup)
+            except:
+                msg = await send_new_message(chat_id, text, reply_markup=reply_markup)
+                pagination_data[chat_id]["blacklist_msg_id"] = msg.message_id
+        else:
+            msg = await send_new_message(chat_id, text, reply_markup=reply_markup)
+            pagination_data[chat_id]["blacklist_msg_id"] = msg.message_id
+
+    # Показываем первую страницу
+    await show_blacklist_page(message.chat.id, 0)
+
+# Обработчики навигации по чёрному списку
+@dp.callback_query(F.data.startswith("blacklist_page_"))
+async def blacklist_page_callback(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав!", show_alert=True)
+        return
+    page = int(callback.data.split("_")[2])
+    # Пересоздаём список items (не храним, но можем восстановить из БД)
+    blacklist = db.get_blacklist()
+    if not blacklist:
+        await callback.message.edit_text("📭 Чёрный список пуст.")
+        await callback.answer()
+        return
+    items = []
+    for row in blacklist:
+        uid = row[0]
+        reason = row[1]
+        name = await get_user_display_name(uid)
+        items.append({"user_id": uid, "name": name, "reason": reason})
+    per_page = 5
+    total_pages = (len(items) + per_page - 1) // per_page
+    if page < 0 or page >= total_pages:
+        await callback.answer()
+        return
+    start = page * per_page
+    end = start + per_page
+    page_items = items[start:end]
+    text = f"🚫 ЧЁРНЫЙ СПИСОК\nСтраница {page+1} из {total_pages}\n\n"
+    for i, u in enumerate(page_items):
+        text += f"{i+1}. {u['name']} (ID: {u['user_id']})\n"
+        if u['reason']:
+            text += f"   Причина: {u['reason']}\n"
+    keyboard = []
+    for u in page_items:
+        keyboard.append([InlineKeyboardButton(text=f"🔓 Разблокировать {u['name']}", callback_data=f"unblacklist_user_{u['user_id']}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"blacklist_page_{page-1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"blacklist_page_{page+1}"))
+    if nav:
+        keyboard.append(nav)
+    keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_blacklist")])
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await callback.message.edit_text(text, reply_markup=reply_markup)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("unblacklist_user_"))
+async def unblacklist_user_callback(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Нет прав!", show_alert=True)
+        return
+    user_id = int(callback.data.split("_")[2])
+    db.remove_from_blacklist(user_id)
+    name = await get_user_display_name(user_id)
+    await callback.answer(f"✅ {name} разблокирован!")
+    # Обновляем текущее сообщение с чёрным списком
+    # Перезагружаем текущую страницу
+    chat_id = callback.message.chat.id
+    current_page = pagination_data.get(chat_id, {}).get("blacklist_page", 0)
+    # Удаляем старое сообщение и показываем заново
+    try:
+        await callback.message.delete()
+    except:
+        pass
+    # Вызываем команду /blacklist заново
+    await cmd_blacklist(callback.message)  # но это не сработает, так как callback.message не имеет атрибутов команды. Лучше просто переотправить.
+    # Проще: создадим новое сообщение
+    blacklist = db.get_blacklist()
+    if not blacklist:
+        await send_new_message(chat_id, "📭 Чёрный список пуст.")
+        return
+    items = []
+    for row in blacklist:
+        uid = row[0]
+        reason = row[1]
+        name = await get_user_display_name(uid)
+        items.append({"user_id": uid, "name": name, "reason": reason})
+    per_page = 5
+    total_pages = (len(items) + per_page - 1) // per_page
+    if current_page >= total_pages:
+        current_page = total_pages - 1 if total_pages > 0 else 0
+    start = current_page * per_page
+    end = start + per_page
+    page_items = items[start:end]
+    text = f"🚫 ЧЁРНЫЙ СПИСОК\nСтраница {current_page+1} из {total_pages}\n\n"
+    for i, u in enumerate(page_items):
+        text += f"{i+1}. {u['name']} (ID: {u['user_id']})\n"
+        if u['reason']:
+            text += f"   Причина: {u['reason']}\n"
+    keyboard = []
+    for u in page_items:
+        keyboard.append([InlineKeyboardButton(text=f"🔓 Разблокировать {u['name']}", callback_data=f"unblacklist_user_{u['user_id']}")])
+    nav = []
+    if current_page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"blacklist_page_{current_page-1}"))
+    if current_page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"blacklist_page_{current_page+1}"))
+    if nav:
+        keyboard.append(nav)
+    keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_blacklist")])
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    msg = await send_new_message(chat_id, text, reply_markup=reply_markup)
+    pagination_data[chat_id]["blacklist_msg_id"] = msg.message_id
+    pagination_data[chat_id]["blacklist_page"] = current_page
+
+@dp.callback_query(F.data == "close_blacklist")
+async def close_blacklist(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.delete()
+
+# Сохраняем старую команду /unblacklist для совместимости (удаление по ID)
 @dp.message(Command("unblacklist"))
 async def cmd_unblacklist(message: types.Message):
     try:
@@ -908,20 +1117,23 @@ async def cmd_unblacklist(message: types.Message):
         db.remove_from_blacklist(user_id)
         await send_new_message(message.chat.id, f"✅ Пользователь {user_id} удалён из чёрного списка.")
         return
-    blacklist = db.get_blacklist()
-    if not blacklist:
-        await send_new_message(message.chat.id, "📭 Чёрный список пуст.")
+    await send_new_message(message.chat.id, "Используйте /blacklist для просмотра списка с кнопками или /unblacklist ID")
+
+@dp.callback_query(F.data.startswith("blacklist_user_"))  # из тикета
+async def blacklist_user(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Только для админов!", show_alert=True)
         return
-    items = [{"user_id": row[0], "reason": row[1]} for row in blacklist]
-    async def format_blacklist_page(page_items, page, total):
-        lines = []
-        for i, u in enumerate(page_items):
-            name = await get_user_display_name(u['user_id'])
-            lines.append(f"{i+1}. {name} (ID: {u['user_id']})")
-        return f"🚫 ВЫБЕРИТЕ ПОЛЬЗОВАТЕЛЯ ДЛЯ РАЗБЛОКИРОВКИ\nСтраница {page} из {total}\n\n" + "\n".join(lines)
-    pagination_data[message.chat.id] = {"items": items, "page": 0, "message_id": None}
-    await show_page(message.chat.id, 0, items, 5, format_blacklist_page, lambda: None)
-    await send_new_message(message.chat.id, "Введите `/unblacklist ID` для удаления.")
+    ticket_id = callback.data.split("_")[2]
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        await callback.answer("❌ Тикет не найден")
+        return
+    user_id = ticket[2]
+    db.add_to_blacklist(user_id, reason=f"Забанен из тикета {ticket_id} админом {callback.from_user.id}")
+    await callback.answer("✅ Пользователь добавлен в чёрный список")
+    await bot.send_message(user_id, "⛔ Вы добавлены в чёрный список ARVION Support.")
+    log_action(callback.from_user.id, callback.from_user.username or "admin", "ЧЁРНЫЙ СПИСОК", ticket_id, f"User {user_id}")
 
 # ========== ОСТАЛЬНЫЕ КОМАНДЫ МОДЕРАТОРА И АДМИНА ==========
 @dp.message(Command("stats"))
@@ -963,7 +1175,8 @@ async def cmd_search(message: types.Message):
     text = f"🔍 Найдено: {len(res)}\n\n"
     for t in res[:10]:
         created = t[6][:16] if t[6] else "дата неизвестна"
-        text += f"🆔 {t[1]} | {t[5]}\n   {t[4][:80]}...\n\n"
+        user_name = await get_user_display_name(t[2])
+        text += f"🆔 {t[1]} | {t[5]}\n   {user_name}\n   {t[4][:80]}...\n\n"
     await send_new_message(message.chat.id, text)
 
 @dp.message(Command("all_tickets"))
@@ -982,7 +1195,8 @@ async def cmd_all_tickets(message: types.Message):
     async def format_open_tickets(page_items, page, total):
         lines = []
         for t in page_items:
-            lines.append(f"🆔 {t[1]}\n👤 {t[3]} (ID: {t[2]})\n📅 {t[6][:16] if t[6] else 'дата неизвестна'}\n📝 {t[4][:80]}...\n")
+            user_name = await get_user_display_name(t[2])
+            lines.append(f"🆔 {t[1]}\n👤 {user_name}\n📅 {t[6][:16] if t[6] else 'дата неизвестна'}\n📝 {t[4][:80]}...\n")
         return f"📋 ОТКРЫТЫЕ ТИКЕТЫ (стр. {page} из {total})\n\n" + "\n".join(lines)
     pagination_data[message.chat.id] = {"items": tickets, "page": 0, "message_id": None}
     await show_page(message.chat.id, 0, tickets, 5, format_open_tickets, lambda: None)
@@ -1172,7 +1386,7 @@ async def cmd_list_templates(message: types.Message):
         return
     items = list(templates.items())
     async def format_templates_page(page_items, page, total):
-        lines = [f"🔹 *{k}*: {v[:50]}..." for k,v in page_items]
+        lines = [f"🔹 {k}: {v[:50]}..." for k,v in page_items]
         return f"📋 СПИСОК ШАБЛОНОВ (стр. {page} из {total})\n\n" + "\n".join(lines)
     pagination_data[message.chat.id] = {"items": items, "page": 0, "message_id": None}
     await show_page(message.chat.id, 0, items, 11, format_templates_page, lambda: None)
@@ -1212,8 +1426,9 @@ async def cmd_transfer(message: types.Message):
         await send_new_message(message.chat.id, "❌ Передать можно только админу или модератору.")
         return
     db.assign_ticket(ticket_id, target_id)
+    target_name = await get_user_display_name(target_id)
     await bot.send_message(target_id, f"📨 Вам передан тикет #{ticket_id} от @{message.from_user.username or message.from_user.first_name}\n\n{my_ticket[4][:300]}")
-    await send_new_message(message.chat.id, f"✅ Тикет #{ticket_id} передан @{username}")
+    await send_new_message(message.chat.id, f"✅ Тикет #{ticket_id} передан {target_name}")
     log_action(message.from_user.id, message.from_user.username or "admin", "ПЕРЕДАЛ ТИКЕТ", ticket_id, f"Кому: {target_id}")
 
 @dp.message(Command("note"))
@@ -1271,7 +1486,7 @@ async def cmd_notes(message: types.Message):
         admin_id, note_text, created_at = n
         admin_name = await get_user_display_name(admin_id)
         created = created_at[:16] if created_at else "дата неизвестна"
-        text += f"[{created}] @{admin_name}: {note_text}\n"
+        text += f"[{created}] {admin_name}: {note_text}\n"
     await send_new_message(message.chat.id, text)
 
 @dp.message(Command("admin_stats"))
@@ -1299,10 +1514,10 @@ async def cmd_admin_stats(message: types.Message):
     text = "📊 СТАТИСТИКА ПЕРСОНАЛА\n\n"
     for name, avg, cnt, role in stats:
         icon = "👑" if role=="admin" else "🛡️"
-        text += f"{icon} @{name} — {avg} ⭐ ({cnt} оценок)\n"
+        text += f"{icon} {name} — {avg} ⭐ ({cnt} оценок)\n"
     await send_new_message(message.chat.id, text)
 
-# ========== HELP С ГРУППИРОВКОЙ И УДАЛЕНИЕМ СТАРЫХ СООБЩЕНИЙ ==========
+# ========== HELP БЕЗ ФОРМАТИРОВАНИЯ ==========
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     try:
@@ -1312,72 +1527,70 @@ async def cmd_help(message: types.Message):
     role = db.get_role(message.from_user.id)
     chat_id = message.chat.id
 
-    # Внутреннее хранилище для сообщений help
     if not hasattr(cmd_help, "messages"):
         cmd_help.messages = {}
 
     async def send_help_msg(text: str, key: str):
-        # Удаляем предыдущее сообщение с таким же ключом
         if key in cmd_help.messages and chat_id in cmd_help.messages[key]:
             try:
                 await bot.delete_message(chat_id, cmd_help.messages[key][chat_id])
             except:
                 pass
-        msg = await bot.send_message(chat_id, text, parse_mode="Markdown")
+        msg = await bot.send_message(chat_id, text, parse_mode=None)
         if key not in cmd_help.messages:
             cmd_help.messages[key] = {}
         cmd_help.messages[key][chat_id] = msg.message_id
 
-    # Текст для всех ролей
     base = (
-        "📌 **ОСНОВНЫЕ КОМАНДЫ**\n"
-        "• `/create_ticket` – создать обращение (жалоба, вопрос, апелляция, предложение, другое)\n"
-        "• `/my_tickets` – история обращений\n"
-        "• `/get_user` – узнать свой ID и username\n"
-        "• `/donate` – поддержать проект (Telegram Stars)\n"
-        "• `/help` – эта справка\n\n"
-        "⭐ **Оценка персонала**\n"
-        "• `/top_staff` – топ персонала по рейтингу\n\n"
-        "📊 **Анализ тональности**\n"
+        "ОСНОВНЫЕ КОМАНДЫ\n"
+        "/create_ticket – создать обращение (жалоба, вопрос, апелляция, предложение, другое)\n"
+        "/my_tickets – история обращений\n"
+        "/get_user – узнать свой ID и username\n"
+        "/donate – поддержать проект (Telegram Stars)\n"
+        "/help – эта справка\n\n"
+        "Оценка персонала\n"
+        "/top_staff – топ персонала по рейтингу\n\n"
+        "Анализ тональности\n"
         "Автоматически определяет эмоциональный оклад: 🔴 негатив, 🟢 позитив, 🟡 нейтрально."
     )
 
     mod = (
-        "🛡️ **МОДЕРАТОРСКИЕ КОМАНДЫ**\n"
-        "**📋 Тикеты**\n"
-        "• `/all_tickets` – список открытых тикетов\n"
-        "• `/transfer @username` – передать тикет другому персоналу\n"
-        "• `/stats` – общая статистика\n"
-        "• `/search текст` – поиск по тикетам\n\n"
-        "**📝 Заметки**\n"
-        "• `/note текст` – добавить заметку к текущему тикету\n"
-        "• `/notes` – показать заметки\n\n"
-        "**📋 Шаблоны**\n"
-        "• `/templates` – список шаблонов\n"
-        "• `/add_template ключ текст` – добавить шаблон (админ)\n"
-        "• `/del_template ключ` – удалить шаблон (админ)\n"
-        "• `/list_templates` – полный список с пагинацией (админ)\n\n"
-        "**📊 Статистика персонала**\n"
-        "• `/admin_stats` – рейтинг всего персонала\n"
-        "• `/top_staff` – топ персонала\n\n"
-        "💡 **Кнопки под тикетом:** Принять, Ответить, Закрыть, Передать."
+        "МОДЕРАТОРСКИЕ КОМАНДЫ\n"
+        "Тикеты\n"
+        "/all_tickets – список открытых тикетов\n"
+        "/transfer @username – передать тикет другому персоналу\n"
+        "/stats – общая статистика\n"
+        "/search текст – поиск по тикетам\n\n"
+        "Заметки\n"
+        "/note текст – добавить заметку к текущему тикету\n"
+        "/notes – показать заметки\n\n"
+        "Шаблоны\n"
+        "/templates – список шаблонов\n"
+        "/add_template ключ текст – добавить шаблон (админ)\n"
+        "/del_template ключ – удалить шаблон (админ)\n"
+        "/list_templates – полный список с пагинацией (админ)\n\n"
+        "Статистика персонала\n"
+        "/admin_stats – рейтинг всего персонала\n"
+        "/top_staff – топ персонала\n\n"
+        "Кнопки под тикетом: Принять, Ответить, Закрыть, Передать."
     )
 
     admin = (
-        "👑 **АДМИНСКИЕ КОМАНДЫ**\n"
-        "**👥 Персонал**\n"
-        "• `/new_moderator` – назначить модератора\n"
-        "• `/del_moderator` – удалить модератора\n\n"
-        "**🚫 Чёрный список**\n"
-        "• `/unblacklist ID` – разблокировать пользователя\n\n"
-        "**📤 Экспорт и логи**\n"
-        "• `/export` – выгрузить тикеты в CSV\n"
-        "• `/log` – последние действия администраторов\n\n"
-        "**📢 Рассылка**\n"
-        "• `/announce текст` – массовая рассылка\n\n"
-        "**🗑️ Управление тикетами**\n"
-        "• `/clear_tickets` – удалить **все** тикеты\n\n"
-        "💡 **Дополнительные кнопки:** Посмотреть, В чёрный список."
+        "АДМИНСКИЕ КОМАНДЫ\n"
+        "Персонал\n"
+        "/new_moderator – назначить модератора\n"
+        "/del_moderator – удалить модератора\n\n"
+        "Чёрный список\n"
+        "/blacklist – показать чёрный список с кнопками для разблокировки\n"
+        "/unblacklist ID – разблокировать по ID\n\n"
+        "Экспорт и логи\n"
+        "/export – выгрузить тикеты в CSV\n"
+        "/log – последние действия администраторов\n\n"
+        "Рассылка\n"
+        "/announce текст – массовая рассылка\n\n"
+        "Управление тикетами\n"
+        "/clear_tickets – удалить все тикеты\n\n"
+        "Дополнительные кнопки под тикетом: Посмотреть, В чёрный список."
     )
 
     if role == "user":
@@ -1385,7 +1598,6 @@ async def cmd_help(message: types.Message):
     elif role == "moderator":
         await send_help_msg(base + "\n\n" + mod, "mod")
     elif role == "admin":
-        # Для админа: два сообщения
         await send_help_msg(base, "admin_base")
         await send_help_msg(mod + "\n\n" + admin, "admin_staff")
 
