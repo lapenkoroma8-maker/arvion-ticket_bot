@@ -1222,5 +1222,11 @@ async def cmd_help(message: types.Message):
             "👑 АДМИНСКИЕ\n/clear_tickets — удалить все\n/export — экспорт CSV\n/log — лог действий\n/announce — рассылка\n/new_moderator — назначить\n/del_moderator — удалить\n/add_template — добавить шаблон\n/del_template — удалить\n/list_templates — список\n/unblacklist ID — разблокировать", keep=True)
 
 # ========== ЗАПУСК ==========
+# Автоматически назначить администратора при первом запуске
+for uid in ADMIN_IDS:
+    if db.get_role(uid) == "user":
+        db.set_role(uid, "admin")
+        print(f"✅ Администратор {uid} назначен автоматически")
+        
 if __name__ == "__main__":
     asyncio.run(main())
