@@ -18,8 +18,7 @@ def init_db():
         status TEXT DEFAULT 'open',
         assigned_to INTEGER DEFAULT NULL,
         created_at TEXT,
-        closed_at TEXT DEFAULT NULL,
-        closed_by INTEGER DEFAULT NULL
+        closed_at TEXT DEFAULT NULL
     )
     ''')
     # Сообщения
@@ -43,11 +42,29 @@ def init_db():
         assigned_at TEXT
     )
     ''')
-    # Роли
+    # Роли (admin / moderator)
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS roles (
         user_id INTEGER PRIMARY KEY,
         role TEXT NOT NULL
+    )
+    ''')
+    # Заметки (только для персонала)
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_id TEXT,
+        admin_id INTEGER,
+        text TEXT,
+        created_at TEXT
+    )
+    ''')
+    # Чёрный список
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS blacklist (
+        user_id INTEGER PRIMARY KEY,
+        reason TEXT,
+        created_at TEXT
     )
     ''')
     conn.commit()
@@ -129,7 +146,7 @@ def get_all_tickets():
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-    SELECT id, ticket_id, user_id, username, text, status, created_at, closed_at, assigned_to, closed_by
+    SELECT id, ticket_id, user_id, username, text, status, created_at, closed_at, assigned_to
     FROM tickets 
     ORDER BY created_at DESC
     ''')
@@ -189,5 +206,52 @@ def get_all_roles():
     conn.close()
     return dict(rows)
 
-# Инициализация
+# ---- Заметки ----
+def add_note(ticket_id: str, admin_id: int, text: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+    INSERT INTO notes (ticket_id, admin_id, text, created_at)
+    VALUES (?, ?, ?, ?)
+    ''', (ticket_id, admin_id, text, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+def get_notes(ticket_id: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+    SELECT admin_id, text, created_at FROM notes WHERE ticket_id = ? ORDER BY created_at
+    ''', (ticket_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+# ---- Чёрный список ----
+def add_to_blacklist(user_id: int, reason: str = ""):
+    conn = get_db_connection()
+    conn.execute("INSERT OR REPLACE INTO blacklist (user_id, reason, created_at) VALUES (?, ?, ?)",
+                 (user_id, reason, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+def remove_from_blacklist(user_id: int):
+    conn = get_db_connection()
+    conn.execute("DELETE FROM blacklist WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_blacklist():
+    conn = get_db_connection()
+    rows = conn.execute("SELECT user_id, reason, created_at FROM blacklist ORDER BY created_at").fetchall()
+    conn.close()
+    return rows
+
+def is_blacklisted(user_id: int) -> bool:
+    conn = get_db_connection()
+    row = conn.execute("SELECT 1 FROM blacklist WHERE user_id = ?", (user_id,)).fetchone()
+    conn.close()
+    return row is not None
+
 init_db()
+print("✅ База данных инициализирована")
