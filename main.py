@@ -942,21 +942,31 @@ async def send_user_reply(message: types.Message, state: FSMContext):
     await state.clear()
 
 # ========== ЧЁРНЫЙ СПИСОК ==========
-@dp.callback_query(F.data.startswith("blacklist_user_"))
-async def blacklist_user(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Только для админов!", show_alert=True)
+@dp.message(Command("unblacklist"))
+async def cmd_unblacklist(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await send_new_message(message.chat.id, "⛔ Только для админов!")
         return
-    ticket_id = callback.data.split("_")[2]
-    ticket = db.get_ticket(ticket_id)
-    if not ticket:
-        await callback.answer("❌ Тикет не найден")
+    blacklist = db.get_blacklist()
+    if not blacklist:
+        await send_new_message(message.chat.id, "📭 Чёрный список пуст.")
         return
-    user_id = ticket[2]
-    db.add_to_blacklist(user_id, reason=f"Забанен из тикета {ticket_id} админом {callback.from_user.id}")
-    await callback.answer("✅ Пользователь добавлен в чёрный список")
-    await bot.send_message(user_id, "⛔ Вы были добавлены в чёрный список ARVION Support.")
-    log_action(callback.from_user.id, callback.from_user.username or "admin", "ЧЁРНЫЙ СПИСОК", ticket_id, f"User {user_id}")
+    items = [{"user_id": row[0], "reason": row[1]} for row in blacklist]
+    
+    # Асинхронная функция для формирования текста страницы
+    async def format_blacklist_page(page_items, page, total):
+        lines = []
+        for i, u in enumerate(page_items):
+            name = await get_user_display_name(u['user_id'])
+            lines.append(f"{i+1}. {name} (ID: {u['user_id']})")
+        header = f"🚫 ВЫБЕРИТЕ ПОЛЬЗОВАТЕЛЯ ДЛЯ РАЗБЛОКИРОВКИ\n\nСтраница {page} из {total}\n\n"
+        return header + "\n".join(lines)
+    
+    pagination_data[message.chat.id] = {"items": items, "page": 0, "message_id": None}
+    await show_page(message.chat.id, 0, items, 5,
+                    format_blacklist_page,   # <-- передаём асинхронную функцию
+                    lambda: None)
+    await send_new_message(message.chat.id, "Введите `/unblacklist ID` (например, /unblacklist 123456789)")
 
 @dp.message(Command("unblacklist"))
 async def cmd_unblacklist(message: types.Message):
