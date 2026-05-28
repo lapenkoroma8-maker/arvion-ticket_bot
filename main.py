@@ -4,6 +4,7 @@ import uuid
 import traceback
 import io
 import os
+import json
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, StateFilter
@@ -298,7 +299,7 @@ async def cmd_start(message: types.Message):
         await send_new_message(message.chat.id, "⛔ ДОСТУП ЗАБЛОКИРОВАН")
         return
     await send_new_message(message.chat.id,
-        "🌿 ARVION Support\n/create_ticket — обращение\n/my_tickets — мои обращения\n/get_user — мой ID\n/top_staff — топ\n/donate — поддержать\n/help — инструкция")
+        "🌿 ARVION Support\n/create_ticket — обращение\n/my_tickets — мои обращения\n/get_user — мой ID\n/top_staff — топ\n/donate — поддержать\n/faq — частые вопросы\n/help — инструкция")
 
 @dp.message(Command("create_ticket"))
 async def cmd_create_ticket(message: types.Message, state: FSMContext):
@@ -324,8 +325,7 @@ async def cmd_my_tickets(message: types.Message):
         await message.delete()
     except:
         pass
-    user_id = message.from_user.id
-    tickets = db.get_user_tickets(user_id)
+    tickets = db.get_user_tickets(message.from_user.id)
     if not tickets:
         await send_new_message(message.chat.id, "📭 Нет обращений.")
         return
@@ -907,7 +907,23 @@ async def send_user_reply(message: types.Message, state: FSMContext):
     await send_new_message(message.chat.id, f"✅ Ответ для #{ticket_id} отправлен")
     await state.clear()
 
-# ========== ЧЁРНЫЙ СПИСОК (команда /blacklist с пагинацией и кнопками) ==========
+# ========== ЧЁРНЫЙ СПИСОК ==========
+@dp.callback_query(F.data.startswith("blacklist_user_"))  # из тикета
+async def blacklist_user(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Только для админов!", show_alert=True)
+        return
+    ticket_id = callback.data.split("_")[2]
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        await callback.answer("❌ Тикет не найден")
+        return
+    user_id = ticket[2]
+    db.add_to_blacklist(user_id, reason=f"Забанен из тикета {ticket_id} админом {callback.from_user.id}")
+    await callback.answer("✅ Пользователь добавлен в чёрный список")
+    await bot.send_message(user_id, "⛔ Вы добавлены в чёрный список ARVION Support.")
+    log_action(callback.from_user.id, callback.from_user.username or "admin", "ЧЁРНЫЙ СПИСОК", ticket_id, f"User {user_id}")
+
 @dp.message(Command("blacklist"))
 async def cmd_blacklist(message: types.Message):
     try:
@@ -922,7 +938,6 @@ async def cmd_blacklist(message: types.Message):
         await send_new_message(message.chat.id, "📭 Чёрный список пуст.")
         return
 
-    # Подготовим данные: для каждого заблокированного узнаем имя
     items = []
     for row in blacklist:
         uid = row[0]
@@ -930,24 +945,6 @@ async def cmd_blacklist(message: types.Message):
         name = await get_user_display_name(uid)
         items.append({"user_id": uid, "name": name, "reason": reason})
 
-    # Функция для формирования текста страницы
-    async def format_blacklist_page(page_items, page, total):
-        lines = []
-        for i, u in enumerate(page_items):
-            lines.append(f"{i+1}. {u['name']} (ID: {u['user_id']})")
-            if u['reason']:
-                lines.append(f"   Причина: {u['reason']}")
-        header = f"🚫 ЧЁРНЫЙ СПИСОК\nСтраница {page} из {total}\n\n"
-        return header + "\n".join(lines)
-
-    # Функция для генерации клавиатуры (кнопки выбора пользователя)
-    def make_keyboard():
-        # Клавиатура будет создана отдельно для каждой страницы в show_page, но мы можем добавить кнопки выбора
-        # Здесь мы вернём список кнопок для текущей страницы, но show_page этого не поддерживает. Лучше сделаем отдельную пагинацию.
-        pass
-
-    # Так как show_page не умеет создавать кнопки выбора для каждого элемента, сделаем свою пагинацию с инлайн-кнопками
-    # Используем тот же принцип, что и для del_moderator: показываем список с кнопками "Разблокировать"
     per_page = 5
     total_pages = (len(items) + per_page - 1) // per_page
 
@@ -972,12 +969,7 @@ async def cmd_blacklist(message: types.Message):
             keyboard.append(nav)
         keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_blacklist")])
         reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-        # Сохраняем текущую страницу в pagination_data
-        if chat_id not in pagination_data:
-            pagination_data[chat_id] = {}
-        pagination_data[chat_id]["blacklist_page"] = page
-        # Отправляем новое сообщение или редактируем предыдущее
-        if "blacklist_msg_id" in pagination_data[chat_id]:
+        if "blacklist_msg_id" in pagination_data.get(chat_id, {}):
             try:
                 await bot.edit_message_text(text, chat_id, pagination_data[chat_id]["blacklist_msg_id"], reply_markup=reply_markup)
             except:
@@ -985,19 +977,19 @@ async def cmd_blacklist(message: types.Message):
                 pagination_data[chat_id]["blacklist_msg_id"] = msg.message_id
         else:
             msg = await send_new_message(chat_id, text, reply_markup=reply_markup)
+            if chat_id not in pagination_data:
+                pagination_data[chat_id] = {}
             pagination_data[chat_id]["blacklist_msg_id"] = msg.message_id
+        pagination_data[chat_id]["blacklist_page"] = page
 
-    # Показываем первую страницу
     await show_blacklist_page(message.chat.id, 0)
 
-# Обработчики навигации по чёрному списку
 @dp.callback_query(F.data.startswith("blacklist_page_"))
 async def blacklist_page_callback(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Нет прав!", show_alert=True)
         return
     page = int(callback.data.split("_")[2])
-    # Пересоздаём список items (не храним, но можем восстановить из БД)
     blacklist = db.get_blacklist()
     if not blacklist:
         await callback.message.edit_text("📭 Чёрный список пуст.")
@@ -1046,18 +1038,14 @@ async def unblacklist_user_callback(callback: types.CallbackQuery):
     db.remove_from_blacklist(user_id)
     name = await get_user_display_name(user_id)
     await callback.answer(f"✅ {name} разблокирован!")
-    # Обновляем текущее сообщение с чёрным списком
-    # Перезагружаем текущую страницу
+    # Обновляем текущее сообщение
     chat_id = callback.message.chat.id
     current_page = pagination_data.get(chat_id, {}).get("blacklist_page", 0)
-    # Удаляем старое сообщение и показываем заново
     try:
         await callback.message.delete()
     except:
         pass
-    # Вызываем команду /blacklist заново
-    await cmd_blacklist(callback.message)  # но это не сработает, так как callback.message не имеет атрибутов команды. Лучше просто переотправить.
-    # Проще: создадим новое сообщение
+    # Перезагружаем чёрный список
     blacklist = db.get_blacklist()
     if not blacklist:
         await send_new_message(chat_id, "📭 Чёрный список пуст.")
@@ -1101,7 +1089,6 @@ async def close_blacklist(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.delete()
 
-# Сохраняем старую команду /unblacklist для совместимости (удаление по ID)
 @dp.message(Command("unblacklist"))
 async def cmd_unblacklist(message: types.Message):
     try:
@@ -1118,22 +1105,6 @@ async def cmd_unblacklist(message: types.Message):
         await send_new_message(message.chat.id, f"✅ Пользователь {user_id} удалён из чёрного списка.")
         return
     await send_new_message(message.chat.id, "Используйте /blacklist для просмотра списка с кнопками или /unblacklist ID")
-
-@dp.callback_query(F.data.startswith("blacklist_user_"))  # из тикета
-async def blacklist_user(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Только для админов!", show_alert=True)
-        return
-    ticket_id = callback.data.split("_")[2]
-    ticket = db.get_ticket(ticket_id)
-    if not ticket:
-        await callback.answer("❌ Тикет не найден")
-        return
-    user_id = ticket[2]
-    db.add_to_blacklist(user_id, reason=f"Забанен из тикета {ticket_id} админом {callback.from_user.id}")
-    await callback.answer("✅ Пользователь добавлен в чёрный список")
-    await bot.send_message(user_id, "⛔ Вы добавлены в чёрный список ARVION Support.")
-    log_action(callback.from_user.id, callback.from_user.username or "admin", "ЧЁРНЫЙ СПИСОК", ticket_id, f"User {user_id}")
 
 # ========== ОСТАЛЬНЫЕ КОМАНДЫ МОДЕРАТОРА И АДМИНА ==========
 @dp.message(Command("stats"))
@@ -1517,6 +1488,122 @@ async def cmd_admin_stats(message: types.Message):
         text += f"{icon} {name} — {avg} ⭐ ({cnt} оценок)\n"
     await send_new_message(message.chat.id, text)
 
+# ========== FAQ (ЧАСТЫЕ ВОПРОСЫ) ==========
+FAQ_FILE = "faq.json"
+
+def load_faq():
+    try:
+        with open(FAQ_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        # создаём пример файла, если его нет
+        default_faq = {
+            "Общие вопросы о проекте": [
+                {"q": "Как связаться с администрацией?", "a": "Создайте тикет через /create_ticket."},
+                {"q": "Где найти правила сервера?", "a": "Правила публикуются в канале @arvion_rules."},
+                {"q": "Как получить роль/доступ?", "a": "Роли выдаются через специальную форму /role или после верификации."},
+                {"q": "Что делать, если меня забанили?", "a": "Создайте апелляцию через /create_ticket, выбрав тип «Апелляция»."}
+            ],
+            "Технические проблемы": [
+                {"q": "Бот не отвечает — что делать?", "a": "Перезапустите бота командой /start. Если не помогло — создайте тикет."},
+                {"q": "Как прикрепить файл к обращению?", "a": "При создании или ответе просто отправьте файл — бот прикрепит его."},
+                {"q": "Почему я не могу создать тикет?", "a": "Возможно, вы в чёрном списке. Обратитесь к админу."}
+            ],
+            "Вопросы по тикет-системе": [
+                {"q": "Сколько времени рассматривается обращение?", "a": "Обычно от нескольких минут до 24 часов."},
+                {"q": "Можно ли закрыть тикет самостоятельно?", "a": "Нет, только администратор или модератор."},
+                {"q": "Как узнать статус моего тикета?", "a": "Используйте команду /my_tickets."},
+                {"q": "Почему тикет закрыт без ответа?", "a": "Возможно, дубликат или нарушение правил оформления."}
+            ],
+            "Модерация и санкции": [
+                {"q": "Как подать апелляцию на блокировку?", "a": "Используйте /create_ticket с типом «Апелляция»."},
+                {"q": "Кто может назначать модераторов?", "a": "Только администраторы проекта."},
+                {"q": "Куда жаловаться на модератора?", "a": "Создайте тикет с типом «Жалоба», укажите ник модератора."}
+            ],
+            "Донаты и поддержка (реальные деньги)": [
+                {"q": "Как поддержать проект реальными деньгами?", "a": "Напишите в тикет — мы пришлём реквизиты (по согласованию)."},
+                {"q": "Какие способы оплаты доступны?", "a": "Банковская карта, СБП, криптовалюта (уточняйте в тикете)."},
+                {"q": "Можно ли вернуть донат?", "a": "Возврат возможен в течение 7 дней при ошибке платежа."}
+            ]
+        }
+        with open(FAQ_FILE, "w", encoding="utf-8") as f:
+            json.dump(default_faq, f, ensure_ascii=False, indent=2)
+        return default_faq
+
+# Обработчик команды /faq
+@dp.message(Command("faq"))
+async def cmd_faq(message: types.Message):
+    try:
+        await message.delete()
+    except:
+        pass
+    faq = load_faq()
+    categories = list(faq.keys())
+    if not categories:
+        await send_new_message(message.chat.id, "❓ Раздел FAQ временно пуст.")
+        return
+    # Формируем кнопки с категориями
+    keyboard = []
+    for cat in categories:
+        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"faq_cat_{cat}")])
+    keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")])
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await send_new_message(message.chat.id, "❓ Выберите категорию вопросов:", reply_markup=reply_markup)
+
+@dp.callback_query(F.data.startswith("faq_cat_"))
+async def faq_category(callback: types.CallbackQuery):
+    category = callback.data.split("_", 2)[2]
+    faq = load_faq()
+    questions = faq.get(category, [])
+    if not questions:
+        await callback.answer("В этой категории пока нет вопросов.")
+        return
+    # Показываем вопросы кнопками
+    keyboard = []
+    for i, item in enumerate(questions):
+        keyboard.append([InlineKeyboardButton(text=item["q"], callback_data=f"faq_q_{category}_{i}")])
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="faq_back")])
+    keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")])
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await callback.message.edit_text(f"📂 Категория: {category}\nВыберите вопрос:", reply_markup=reply_markup)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("faq_q_"))
+async def faq_question(callback: types.CallbackQuery):
+    parts = callback.data.split("_", 3)
+    # формат: faq_q_{category}_{index}
+    if len(parts) < 4:
+        await callback.answer("Ошибка")
+        return
+    category = parts[2]
+    idx = int(parts[3])
+    faq = load_faq()
+    questions = faq.get(category, [])
+    if idx >= len(questions):
+        await callback.answer("Вопрос не найден")
+        return
+    item = questions[idx]
+    text = f"❓ *{item['q']}*\n\n📌 {item['a']}"
+    # Добавляем кнопки "Назад к вопросам" и "В категории"
+    keyboard = [
+        [InlineKeyboardButton(text="🔙 К вопросам", callback_data=f"faq_cat_{category}")],
+        [InlineKeyboardButton(text="🏠 Категории", callback_data="faq_back")],
+        [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")]
+    ]
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+    await callback.answer()
+
+@dp.callback_query(F.data == "faq_back")
+async def faq_back(callback: types.CallbackQuery):
+    await cmd_faq(callback.message)  # повторно показываем категории
+    await callback.answer()
+
+@dp.callback_query(F.data == "close_faq")
+async def close_faq(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.delete()
+
 # ========== HELP БЕЗ ФОРМАТИРОВАНИЯ ==========
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
@@ -1543,10 +1630,11 @@ async def cmd_help(message: types.Message):
 
     base = (
         "ОСНОВНЫЕ КОМАНДЫ\n"
-        "/create_ticket – создать обращение (жалоба, вопрос, апелляция, предложение, другое)\n"
+        "/create_ticket – создать обращение\n"
         "/my_tickets – история обращений\n"
         "/get_user – узнать свой ID и username\n"
         "/donate – поддержать проект (Telegram Stars)\n"
+        "/faq – частые вопросы\n"
         "/help – эта справка\n\n"
         "Оценка персонала\n"
         "/top_staff – топ персонала по рейтингу\n\n"
