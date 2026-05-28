@@ -890,6 +890,122 @@ async def send_user_reply(message: types.Message, state: FSMContext):
     await send_new_message(message.chat.id, f"✅ Ответ для #{ticket_id} отправлен")
     await state.clear()
 
+# ========== ПЕРЕДАЧА ТИКЕТА ==========
+@dp.callback_query(F.data.startswith("show_transfer_"))
+async def show_transfer_list(callback: types.CallbackQuery):
+    user_role = db.get_role(callback.from_user.id)
+    if user_role not in ["admin", "moderator"]:
+        await callback.answer("⛔ Нет прав!", show_alert=True)
+        return
+    
+    ticket_id = callback.data.split("_")[2]
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        await callback.answer("❌ Тикет не найден!")
+        return
+    
+    assigned = db.get_assigned_admin(ticket_id)
+    if assigned != callback.from_user.id and user_role != "admin":
+        await callback.answer("❌ Тикет принят другим!", show_alert=True)
+        return
+    
+    roles = db.get_all_roles()
+    staff = []
+    for uid, role in roles.items():
+        if uid == callback.from_user.id:
+            continue
+        if role in ["admin", "moderator"]:
+            name = await get_user_display_name(uid)
+            staff.append({"user_id": uid, "name": name, "role": role})
+    
+    if not staff:
+        await callback.answer("❌ Нет доступных сотрудников для передачи!", show_alert=True)
+        return
+    
+    pagination_data[callback.message.chat.id] = {"ticket_id": ticket_id}
+    
+    keyboard = []
+    for u in staff:
+        role_icon = "👑" if u['role'] == "admin" else "🛡️"
+        keyboard.append([InlineKeyboardButton(
+            text=f"{role_icon} {u['name']} ({u['role']})",
+            callback_data=f"transfer_to_{u['user_id']}_{ticket_id}"
+        )])
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"back_to_ticket_{ticket_id}")])
+    
+    await callback.message.edit_text(
+        "📨 Выберите сотрудника для передачи тикета:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("transfer_to_"))
+async def transfer_to_user(callback: types.CallbackQuery):
+    user_role = db.get_role(callback.from_user.id)
+    if user_role not in ["admin", "moderator"]:
+        await callback.answer("⛔ Нет прав!", show_alert=True)
+        return
+    
+    parts = callback.data.split("_")
+    if len(parts) < 3:
+        await callback.answer("Ошибка формата")
+        return
+    
+    target_id = int(parts[2])
+    ticket_id = parts[3]
+    
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        await callback.answer("❌ Тикет не найден!", show_alert=True)
+        return
+    
+    assigned = db.get_assigned_admin(ticket_id)
+    if assigned != callback.from_user.id and user_role != "admin":
+        await callback.answer("❌ Тикет принят другим!", show_alert=True)
+        return
+    
+    target_role = db.get_role(target_id)
+    if target_role not in ["admin", "moderator"]:
+        await callback.answer("❌ Целевой пользователь не является сотрудником!", show_alert=True)
+        return
+    
+    db.assign_ticket(ticket_id, target_id)
+    
+    target_name = await get_user_display_name(target_id)
+    sender_name = await get_user_display_name(callback.from_user.id)
+    ticket_text = ticket[4][:300]
+    
+    await bot.send_message(
+        target_id,
+        f"📨 Вам передан тикет #{ticket_id} от {sender_name}\n\n{ticket_text}",
+        reply_markup=get_ticket_keyboard(ticket_id, target_role, True)
+    )
+    
+    await callback.message.edit_text(
+        f"✅ Тикет #{ticket_id} успешно передан {target_name}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")]])
+    )
+    
+    await callback.answer(f"✅ Тикет передан {target_name}")
+    log_action(callback.from_user.id, callback.from_user.username or "admin", "ПЕРЕДАЛ ТИКЕТ", ticket_id, f"Кому: {target_id}")
+
+@dp.callback_query(F.data.startswith("back_to_ticket_"))
+async def back_to_ticket(callback: types.CallbackQuery):
+    ticket_id = callback.data.split("_")[3]
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        await callback.answer("❌ Тикет не найден")
+        return
+    
+    assigned = db.get_assigned_admin(ticket_id)
+    role = db.get_role(callback.from_user.id)
+    
+    await callback.message.edit_text(
+        f"🆔 ТИКЕТ #{ticket_id}\n\n{ticket[4]}",
+        reply_markup=get_ticket_keyboard(ticket_id, role, assigned == callback.from_user.id or role == "admin")
+    )
+    await callback.answer()
+
 # ========== КНОПКА "ДОБАВИТЬ ПОМЕТКУ" ==========
 @dp.callback_query(F.data.startswith("add_note_"))
 async def add_note_from_ticket(callback: types.CallbackQuery, state: FSMContext):
