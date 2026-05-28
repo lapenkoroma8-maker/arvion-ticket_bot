@@ -1490,27 +1490,29 @@ async def cmd_admin_stats(message: types.Message):
 
 # ========== FAQ (ЧАСТЫЕ ВОПРОСЫ) ==========
 FAQ_FILE = "faq.json"
-_faq_cache = None
 
 def load_faq():
-    global _faq_cache
     try:
         with open(FAQ_FILE, "r", encoding="utf-8") as f:
-            _faq_cache = json.load(f)
-            return _faq_cache
+            return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         default_faq = {
             "Общие вопросы о проекте": [
-                {"q": "Как связаться с администрацией?", "a": "Создайте тикет через /create_ticket."},
-                {"q": "Где найти правила сервера?", "a": "Правила в канале @arvion_rules."}
-            ],
-            "Технические проблемы": [
-                {"q": "Бот не отвечает — что делать?", "a": "Перезапустите /start. Если нет — создайте тикет."}
+                {"q": "Как связаться с администрацией?", "a": "Создайте тикет через /create_ticket. Администраторы увидят его и ответят."},
+                {"q": "Где найти правила сервера?", "a": "Правила публикуются в канале @arvion_rules."},
+                {"q": "Что делать, если меня забанили?", "a": "Создайте апелляцию через /create_ticket с типом «Апелляция»."}
             ]
         }
         with open(FAQ_FILE, "w", encoding="utf-8") as f:
             json.dump(default_faq, f, ensure_ascii=False, indent=2)
         return default_faq
+
+# Экранирование спецсимволов для Markdown
+def escape_markdown(text: str) -> str:
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
 
 @dp.message(Command("faq"))
 async def cmd_faq(message: types.Message):
@@ -1523,62 +1525,106 @@ async def cmd_faq(message: types.Message):
     if not categories:
         await send_new_message(message.chat.id, "❓ Раздел FAQ временно пуст.")
         return
+    
     keyboard = []
     for idx, cat in enumerate(categories):
         keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"faq_cat_{idx}")])
     keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")])
+    
     await send_new_message(message.chat.id, "❓ Выберите категорию вопросов:", 
                            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 @dp.callback_query(F.data.startswith("faq_cat_"))
 async def faq_category(callback: types.CallbackQuery):
-    idx = int(callback.data.split("_")[2])
+    try:
+        idx = int(callback.data.split("_")[2])
+    except:
+        await callback.answer("Ошибка")
+        return
+    
     faq = load_faq()
     categories = list(faq.keys())
+    
     if idx >= len(categories):
         await callback.answer("Категория не найдена")
         return
+    
     category = categories[idx]
     questions = faq.get(category, [])
+    
     if not questions:
         await callback.answer("В этой категории нет вопросов.")
         return
+    
     keyboard = []
     for i, item in enumerate(questions):
-        keyboard.append([InlineKeyboardButton(text=item["q"][:60], callback_data=f"faq_q_{idx}_{i}")])
+        # Обрезаем слишком длинные вопросы (Telegram лимит 64 байта для callback_data)
+        q_text = item["q"][:50] + "..." if len(item["q"]) > 50 else item["q"]
+        keyboard.append([InlineKeyboardButton(text=q_text, callback_data=f"faq_q_{idx}_{i}")])
     keyboard.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="faq_back")])
     keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")])
-    await callback.message.edit_text(f"📂 Категория: {category}\nВыберите вопрос:",
-                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    
+    await callback.message.edit_text(
+        f"📂 Категория: {category}\nВыберите вопрос:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("faq_q_"))
 async def faq_question(callback: types.CallbackQuery):
     parts = callback.data.split("_")
-    if len(parts) < 3:
+    if len(parts) < 4:
         await callback.answer("Ошибка формата")
         return
-    cat_idx = int(parts[2])
-    q_idx = int(parts[3]) if len(parts) > 3 else 0
+    
+    try:
+        cat_idx = int(parts[2])
+        q_idx = int(parts[3])
+    except:
+        await callback.answer("Ошибка")
+        return
+    
     faq = load_faq()
     categories = list(faq.keys())
+    
     if cat_idx >= len(categories):
         await callback.answer("Категория не найдена")
         return
+    
     category = categories[cat_idx]
     questions = faq.get(category, [])
+    
     if q_idx >= len(questions):
         await callback.answer("Вопрос не найден")
         return
+    
     item = questions[q_idx]
-    text = f"❓ *{item['q']}*\n\n📌 {item['a']}"
+    
+    # Экранируем спецсимволы для безопасного Markdown
+    safe_question = escape_markdown(item['q'])
+    safe_answer = escape_markdown(item['a'])
+    
+    text = f"❓ *{safe_question}*\n\n📌 {safe_answer}"
+    
     keyboard = [
         [InlineKeyboardButton(text="🔙 К вопросам", callback_data=f"faq_cat_{cat_idx}")],
         [InlineKeyboardButton(text="🏠 Категории", callback_data="faq_back")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")]
     ]
-    await callback.message.edit_text(text, parse_mode="Markdown", 
-                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    
+    try:
+        await callback.message.edit_text(
+            text, 
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+    except Exception as e:
+        # Если Markdown не проходит, отправляем без форматирования
+        print(f"Markdown error: {e}")
+        await callback.message.edit_text(
+            f"❓ {item['q']}\n\n📌 {item['a']}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
     await callback.answer()
 
 @dp.callback_query(F.data == "faq_back")
@@ -1591,7 +1637,7 @@ async def faq_back(callback: types.CallbackQuery):
 async def close_faq(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.delete()
-
+    
 # ========== HELP БЕЗ ФОРМАТИРОВАНИЯ ==========
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
