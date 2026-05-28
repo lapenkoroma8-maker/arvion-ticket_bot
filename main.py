@@ -11,7 +11,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, LabeledPrice, PreCheckoutQuery
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 import database as db
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -19,15 +19,16 @@ from aiohttp import web
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 
 # ===========================================
-# НАСТРОЙКИ (измените при необходимости)
+# НАСТРОЙКИ (измените под себя)
 # ===========================================
 BOT_TOKEN = "8918794962:AAGMCCr86CkgL6ASFmFoJnqNgc-Kp6Vsvtw"
 ADMIN_IDS = [1781331191]
 SPREADSHEET_ID = "1Z70dNBhBC6Qb84Tiig8PJWaTpU3YoN_QC-zdEb4hzfM"
 CREDENTIALS_FILE = "credentials.json"
+DONATION_URL = "https://www.donationalerts.com/r/x1red"
 # =================================================
 
-# Google Sheets (опционально)
+# Google Sheets
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 try:
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
@@ -64,7 +65,7 @@ def analyze_sentiment(text: str):
     pos = sum(1 for w in POSITIVE_WORDS if w in text_lower)
     return ("🔴", "негатив") if neg > pos else (("🟢", "позитив") if pos > neg else ("🟡", "нейтрально"))
 
-# ========== УДАЛЕНИЕ СТАРЫХ СООБЩЕНИЙ БОТА ==========
+# ========== УДАЛЕНИЕ СТАРЫХ СООБЩЕНИЙ ==========
 last_bot_messages = {}
 async def delete_previous_bot_message(chat_id: int):
     if chat_id in last_bot_messages:
@@ -209,7 +210,7 @@ def log_action(admin_id, admin_name, action, ticket_id=None, details=""):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         f.write(f"[{ts}] Админ {admin_id} (@{admin_name}) - {action}" + (f" | Тикет: {ticket_id}" if ticket_id else "") + (f" | {details}" if details else "") + "\n")
 
-# ========== ПАГИНАЦИЯ (с поддержкой асинхронных функций) ==========
+# ========== ПАГИНАЦИЯ ==========
 pagination_data = {}
 async def show_page(chat_id: int, page: int, items: list, per_page: int, text_func, keyboard_func=None):
     data = pagination_data.get(chat_id)
@@ -298,8 +299,19 @@ async def cmd_start(message: types.Message):
     if db.is_blacklisted(message.from_user.id):
         await send_new_message(message.chat.id, "⛔ ДОСТУП ЗАБЛОКИРОВАН")
         return
-    await send_new_message(message.chat.id,
-        "🌿 ARVION Support\n/create_ticket — обращение\n/my_tickets — мои обращения\n/get_user — мой ID\n/top_staff — топ\n/donate — поддержать\n/faq — частые вопросы\n/help — инструкция")
+    
+    text = (
+        "🌿 Добро пожаловать в ARVION Support!\n\n"
+        "📌 Основные команды:\n"
+        "/create_ticket — новое обращение\n"
+        "/my_tickets — мои обращения\n"
+        "/get_user — мой ID\n"
+        "/top_staff — топ персонала\n"
+        "/donate — поддержать проект\n"
+        "/faq — частые вопросы\n"
+        "/help — полная инструкция"
+    )
+    await send_new_message(message.chat.id, text)
 
 @dp.message(Command("create_ticket"))
 async def cmd_create_ticket(message: types.Message, state: FSMContext):
@@ -315,9 +327,10 @@ async def cmd_create_ticket(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="❓ Вопрос", callback_data="type_question")],
         [InlineKeyboardButton(text="⚖️ Апелляция", callback_data="type_appeal")],
         [InlineKeyboardButton(text="💡 Предложение", callback_data="type_suggestion")],
-        [InlineKeyboardButton(text="📌 Другое", callback_data="type_other")]
+        [InlineKeyboardButton(text="📌 Другое", callback_data="type_other")],
+        [InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")]
     ])
-    await send_new_message(message.chat.id, "Выберите тип:", reply_markup=kb)
+    await send_new_message(message.chat.id, "Выберите тип обращения:", reply_markup=kb)
 
 @dp.message(Command("my_tickets"))
 async def cmd_my_tickets(message: types.Message):
@@ -327,14 +340,15 @@ async def cmd_my_tickets(message: types.Message):
         pass
     tickets = db.get_user_tickets(message.from_user.id)
     if not tickets:
-        await send_new_message(message.chat.id, "📭 Нет обращений.")
+        await send_new_message(message.chat.id, "📭 У вас нет обращений.")
         return
     text = "📋 Ваши обращения:\n\n"
     for t in tickets:
         tid, txt, status, created = t
         date = created[:16] if created else "дата неизвестна"
         text += f"{'🟡' if status=='open' else '🔴'} {tid} | {status} | {date}\n   {txt[:80]}...\n\n"
-    await send_new_message(message.chat.id, text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")]])
+    await send_new_message(message.chat.id, text, reply_markup=kb)
 
 @dp.message(Command("get_user"))
 async def cmd_get_user(message: types.Message):
@@ -344,7 +358,9 @@ async def cmd_get_user(message: types.Message):
         pass
     u = message.from_user
     name = await get_user_display_name(u.id)
-    await send_new_message(message.chat.id, f"Ваш ID: {u.id}\nИмя: {name}\nUsername: @{u.username or ''}")
+    text = f"👤 ВАШ АККАУНТ\n\nID: {u.id}\nИмя: {name}\nUsername: @{u.username or ''}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")]])
+    await send_new_message(message.chat.id, text, reply_markup=kb)
 
 @dp.message(Command("top_staff"))
 async def cmd_top_staff(message: types.Message):
@@ -364,11 +380,12 @@ async def cmd_top_staff(message: types.Message):
         await send_new_message(message.chat.id, "🏆 Нет данных.")
         return
     staff.sort(key=lambda x: x[1], reverse=True)
-    text = "🏆 ТОП ПЕРСОНАЛА\n"
+    text = "🏆 ТОП ПЕРСОНАЛА\n\n"
     for i, (name, avg, cnt, role) in enumerate(staff[:10], 1):
         icon = "👑" if role == "admin" else "🛡️"
         text += f"{i}. {icon} {name} — {avg} ⭐ ({cnt} оценок)\n"
-    await send_new_message(message.chat.id, text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")]])
+    await send_new_message(message.chat.id, text, reply_markup=kb)
 
 @dp.message(Command("donate"))
 async def cmd_donate(message: types.Message):
@@ -379,38 +396,19 @@ async def cmd_donate(message: types.Message):
     if db.is_blacklisted(message.from_user.id):
         await send_new_message(message.chat.id, "⛔ Заблокированы!")
         return
+    
+    text = "❤️ Поддержать проект ARVION\n\nНажмите на кнопку ниже, чтобы открыть страницу доната.\n\nСпасибо за поддержку!"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ 5", callback_data="donate_5"), InlineKeyboardButton(text="⭐ 10", callback_data="donate_10")],
-        [InlineKeyboardButton(text="⭐ 25", callback_data="donate_25"), InlineKeyboardButton(text="⭐ 50", callback_data="donate_50")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")]
+        [InlineKeyboardButton(text="💝 Поддержать проект", url=DONATION_URL)],
+        [InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")]
     ])
-    await send_new_message(message.chat.id, "Поддержать проект Telegram Stars:", reply_markup=kb)
-
-@dp.callback_query(F.data.startswith("donate_"))
-async def process_donate(callback: types.CallbackQuery):
-    amount = int(callback.data.split("_")[1])
-    await callback.bot.send_invoice(
-        chat_id=callback.from_user.id, title="Поддержка ARVION",
-        description=f"Донат {amount} Stars", payload="donation", currency="XTR",
-        prices=[LabeledPrice(label="Донат", amount=amount)], start_parameter="donation"
-    )
-    await callback.answer()
-    await delete_previous_bot_message(callback.message.chat.id)
+    await send_new_message(message.chat.id, text, reply_markup=kb)
 
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main(callback: types.CallbackQuery):
     await callback.answer()
     await delete_previous_bot_message(callback.message.chat.id)
     await cmd_start(callback.message)
-
-@dp.pre_checkout_query()
-async def process_pre_checkout(query: PreCheckoutQuery):
-    await query.answer(ok=True)
-
-@dp.message(F.successful_payment)
-async def process_successful_payment(message: types.Message):
-    await message.answer("❤️ Спасибо за поддержку!")
-    log_action(message.from_user.id, message.from_user.username or "user", "ДОНАТ", details=f"Сумма: {message.successful_payment.total_amount} Stars")
 
 # ========== УПРАВЛЕНИЕ МОДЕРАТОРАМИ ==========
 @dp.message(Command("new_moderator"))
@@ -495,7 +493,7 @@ async def cmd_del_moderator(message: types.Message):
             log_action(message.from_user.id, message.from_user.username or "admin", "УДАЛИЛ МОДЕРАТОРА", details=f"User {uid}")
             return
         except Exception as e:
-            await send_new_message(message.chat.id, f"❌ Ошибка: {e}. Убедитесь, что пользователь существует.")
+            await send_new_message(message.chat.id, f"❌ Ошибка: {e}")
             return
 
     roles = db.get_all_roles()
@@ -541,7 +539,7 @@ def get_ticket_keyboard(ticket_id: str, user_role: str, is_assigned=False, is_vi
               [InlineKeyboardButton(text="📨 Передать", callback_data=f"show_transfer_{ticket_id}")]]
         if user_role == "admin":
             kb.append([InlineKeyboardButton(text="🚫 В чёрный список", callback_data=f"blacklist_user_{ticket_id}")])
-        kb.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"back_to_ticket_{ticket_id}")])
+        kb.append([InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")])
         return InlineKeyboardMarkup(inline_keyboard=kb)
     if is_assigned:
         kb = [[InlineKeyboardButton(text="💬 Ответить", callback_data=f"admin_reply_{ticket_id}")],
@@ -585,7 +583,8 @@ async def back_to_type_selection(callback: types.CallbackQuery, state: FSMContex
         [InlineKeyboardButton(text="❓ Вопрос", callback_data="type_question")],
         [InlineKeyboardButton(text="⚖️ Апелляция", callback_data="type_appeal")],
         [InlineKeyboardButton(text="💡 Предложение", callback_data="type_suggestion")],
-        [InlineKeyboardButton(text="📌 Другое", callback_data="type_other")]
+        [InlineKeyboardButton(text="📌 Другое", callback_data="type_other")],
+        [InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")]
     ])
     await send_new_message(callback.message.chat.id, "Выберите тип обращения:", reply_markup=kb)
 
@@ -908,7 +907,7 @@ async def send_user_reply(message: types.Message, state: FSMContext):
     await state.clear()
 
 # ========== ЧЁРНЫЙ СПИСОК ==========
-@dp.callback_query(F.data.startswith("blacklist_user_"))  # из тикета
+@dp.callback_query(F.data.startswith("blacklist_user_"))
 async def blacklist_user(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Только для админов!", show_alert=True)
@@ -1038,14 +1037,12 @@ async def unblacklist_user_callback(callback: types.CallbackQuery):
     db.remove_from_blacklist(user_id)
     name = await get_user_display_name(user_id)
     await callback.answer(f"✅ {name} разблокирован!")
-    # Обновляем текущее сообщение
     chat_id = callback.message.chat.id
     current_page = pagination_data.get(chat_id, {}).get("blacklist_page", 0)
     try:
         await callback.message.delete()
     except:
         pass
-    # Перезагружаем чёрный список
     blacklist = db.get_blacklist()
     if not blacklist:
         await send_new_message(chat_id, "📭 Чёрный список пуст.")
@@ -1122,7 +1119,9 @@ async def cmd_stats(message: types.Message):
     closed = len([t for t in tickets if t[5]=="closed"])
     today = datetime.now().date()
     today_t = len([t for t in tickets if t[6] and datetime.fromisoformat(t[6]).date()==today])
-    await send_new_message(message.chat.id, f"📊 Статистика\nВсего: {total}\n🟡 Открыто: {open_t}\n🔴 Закрыто: {closed}\n📅 За сегодня: {today_t}")
+    text = f"📊 СТАТИСТИКА\n\nВсего: {total}\n🟡 Открыто: {open_t}\n🔴 Закрыто: {closed}\n📅 За сегодня: {today_t}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")]])
+    await send_new_message(message.chat.id, text, reply_markup=kb)
 
 @dp.message(Command("search"))
 async def cmd_search(message: types.Message):
@@ -1147,8 +1146,9 @@ async def cmd_search(message: types.Message):
     for t in res[:10]:
         created = t[6][:16] if t[6] else "дата неизвестна"
         user_name = await get_user_display_name(t[2])
-        text += f"🆔 {t[1]} | {t[5]}\n   {user_name}\n   {t[4][:80]}...\n\n"
-    await send_new_message(message.chat.id, text)
+        text += f"🆔 {t[1]} | {t[5]}\n   {user_name}\n   📅 {created}\n   📝 {t[4][:80]}...\n\n"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")]])
+    await send_new_message(message.chat.id, text, reply_markup=kb)
 
 @dp.message(Command("all_tickets"))
 async def cmd_all_tickets(message: types.Message):
@@ -1299,7 +1299,8 @@ async def cmd_templates(message: types.Message):
         await send_new_message(message.chat.id, "📋 Шаблонов нет")
         return
     text = "📋 ШАБЛОНЫ:\n\n" + "\n".join([f"🔹 {k}: {v[:50]}..." for k,v in templates.items()])
-    await send_new_message(message.chat.id, text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")]])
+    await send_new_message(message.chat.id, text, reply_markup=kb)
 
 @dp.message(Command("add_template"))
 async def cmd_add_template(message: types.Message):
@@ -1458,7 +1459,8 @@ async def cmd_notes(message: types.Message):
         admin_name = await get_user_display_name(admin_id)
         created = created_at[:16] if created_at else "дата неизвестна"
         text += f"[{created}] {admin_name}: {note_text}\n"
-    await send_new_message(message.chat.id, text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")]])
+    await send_new_message(message.chat.id, text, reply_markup=kb)
 
 @dp.message(Command("admin_stats"))
 async def cmd_admin_stats(message: types.Message):
@@ -1486,7 +1488,8 @@ async def cmd_admin_stats(message: types.Message):
     for name, avg, cnt, role in stats:
         icon = "👑" if role=="admin" else "🛡️"
         text += f"{icon} {name} — {avg} ⭐ ({cnt} оценок)\n"
-    await send_new_message(message.chat.id, text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")]])
+    await send_new_message(message.chat.id, text, reply_markup=kb)
 
 # ========== FAQ (ЧАСТЫЕ ВОПРОСЫ) ==========
 FAQ_FILE = "faq.json"
@@ -1498,9 +1501,9 @@ def load_faq():
     except (FileNotFoundError, json.JSONDecodeError):
         default_faq = {
             "Общие вопросы о проекте": [
-                {"q": "Как связаться с администрацией?", "a": "Создайте тикет через /create_ticket. Администраторы увидят его и ответят."},
-                {"q": "Где найти правила сервера?", "a": "Правила публикуются в канале @arvion_rules."},
-                {"q": "Что делать, если меня забанили?", "a": "Создайте апелляцию через /create_ticket с типом «Апелляция»."}
+                {"q": "Как связаться с администрацией?", "a": "Создайте тикет через /create_ticket."},
+                {"q": "Где найти правила сервера?", "a": "Нажмите на кнопку ниже.", "url": "https://docs.google.com/document/d/1g-zSDOjvC4UeaZU83bm-tDOtLuWe87b2c7VYY1kNVH8/edit?usp=sharing"},
+                {"q": "Как получить роль/доступ?", "a": "Напишите в тикет."}
             ]
         }
         with open(FAQ_FILE, "w", encoding="utf-8") as f:
@@ -1530,6 +1533,7 @@ async def cmd_faq(message: types.Message):
     for idx, cat in enumerate(categories):
         keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"faq_cat_{idx}")])
     keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")])
+    keyboard.append([InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")])
     
     await send_new_message(message.chat.id, "❓ Выберите категорию вопросов:", 
                            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -1558,11 +1562,11 @@ async def faq_category(callback: types.CallbackQuery):
     
     keyboard = []
     for i, item in enumerate(questions):
-        # Обрезаем слишком длинные вопросы (Telegram лимит 64 байта для callback_data)
         q_text = item["q"][:50] + "..." if len(item["q"]) > 50 else item["q"]
         keyboard.append([InlineKeyboardButton(text=q_text, callback_data=f"faq_q_{idx}_{i}")])
     keyboard.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="faq_back")])
     keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")])
+    keyboard.append([InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")])
     
     await callback.message.edit_text(
         f"📂 Категория: {category}\nВыберите вопрос:",
@@ -1600,17 +1604,22 @@ async def faq_question(callback: types.CallbackQuery):
     
     item = questions[q_idx]
     
-    # Экранируем спецсимволы для безопасного Markdown
+    # Экранируем спецсимволы
     safe_question = escape_markdown(item['q'])
     safe_answer = escape_markdown(item['a'])
-    
     text = f"❓ *{safe_question}*\n\n📌 {safe_answer}"
     
-    keyboard = [
-        [InlineKeyboardButton(text="🔙 К вопросам", callback_data=f"faq_cat_{cat_idx}")],
-        [InlineKeyboardButton(text="🏠 Категории", callback_data="faq_back")],
-        [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")]
-    ]
+    # Формируем клавиатуру
+    keyboard = []
+    
+    # Если есть URL, добавляем кнопку-ссылку
+    if "url" in item and item["url"]:
+        keyboard.append([InlineKeyboardButton(text="🔗 Открыть правила", url=item["url"])])
+    
+    keyboard.append([InlineKeyboardButton(text="🔙 К вопросам", callback_data=f"faq_cat_{cat_idx}")])
+    keyboard.append([InlineKeyboardButton(text="🏠 Категории", callback_data="faq_back")])
+    keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")])
+    keyboard.append([InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")])
     
     try:
         await callback.message.edit_text(
@@ -1619,7 +1628,6 @@ async def faq_question(callback: types.CallbackQuery):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
     except Exception as e:
-        # Если Markdown не проходит, отправляем без форматирования
         print(f"Markdown error: {e}")
         await callback.message.edit_text(
             f"❓ {item['q']}\n\n📌 {item['a']}",
@@ -1637,8 +1645,8 @@ async def faq_back(callback: types.CallbackQuery):
 async def close_faq(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.delete()
-    
-# ========== HELP БЕЗ ФОРМАТИРОВАНИЯ ==========
+
+# ========== HELP (без форматирования) ==========
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     try:
@@ -1667,7 +1675,7 @@ async def cmd_help(message: types.Message):
         "/create_ticket – создать обращение\n"
         "/my_tickets – история обращений\n"
         "/get_user – узнать свой ID и username\n"
-        "/donate – поддержать проект (Telegram Stars)\n"
+        "/donate – поддержать проект\n"
         "/faq – частые вопросы\n"
         "/help – эта справка\n\n"
         "Оценка персонала\n"
@@ -1687,10 +1695,7 @@ async def cmd_help(message: types.Message):
         "/note текст – добавить заметку к текущему тикету\n"
         "/notes – показать заметки\n\n"
         "Шаблоны\n"
-        "/templates – список шаблонов\n"
-        "/add_template ключ текст – добавить шаблон (админ)\n"
-        "/del_template ключ – удалить шаблон (админ)\n"
-        "/list_templates – полный список с пагинацией (админ)\n\n"
+        "/templates – список шаблонов\n\n"
         "Статистика персонала\n"
         "/admin_stats – рейтинг всего персонала\n"
         "/top_staff – топ персонала\n\n"
@@ -1710,6 +1715,10 @@ async def cmd_help(message: types.Message):
         "/log – последние действия администраторов\n\n"
         "Рассылка\n"
         "/announce текст – массовая рассылка\n\n"
+        "Шаблоны (управление)\n"
+        "/add_template ключ текст – добавить шаблон\n"
+        "/del_template ключ – удалить шаблон\n"
+        "/list_templates – полный список с пагинацией\n\n"
         "Управление тикетами\n"
         "/clear_tickets – удалить все тикеты\n\n"
         "Дополнительные кнопки под тикетом: Посмотреть, В чёрный список."
