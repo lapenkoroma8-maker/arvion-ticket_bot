@@ -536,7 +536,8 @@ def get_ticket_keyboard(ticket_id: str, user_role: str, is_assigned=False, is_vi
     if is_view:
         kb = [[InlineKeyboardButton(text="💬 Ответить", callback_data=f"admin_reply_{ticket_id}")],
               [InlineKeyboardButton(text="✅ Закрыть", callback_data=f"close_{ticket_id}")],
-              [InlineKeyboardButton(text="📨 Передать", callback_data=f"show_transfer_{ticket_id}")]]
+              [InlineKeyboardButton(text="📨 Передать", callback_data=f"show_transfer_{ticket_id}")],
+              [InlineKeyboardButton(text="📝 Добавить пометку", callback_data=f"add_note_{ticket_id}")]]
         if user_role == "admin":
             kb.append([InlineKeyboardButton(text="🚫 В чёрный список", callback_data=f"blacklist_user_{ticket_id}")])
         kb.append([InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")])
@@ -544,14 +545,13 @@ def get_ticket_keyboard(ticket_id: str, user_role: str, is_assigned=False, is_vi
     if is_assigned:
         kb = [[InlineKeyboardButton(text="💬 Ответить", callback_data=f"admin_reply_{ticket_id}")],
               [InlineKeyboardButton(text="✅ Закрыть", callback_data=f"close_{ticket_id}")],
-              [InlineKeyboardButton(text="📨 Передать", callback_data=f"show_transfer_{ticket_id}")]]
+              [InlineKeyboardButton(text="📨 Передать", callback_data=f"show_transfer_{ticket_id}")],
+              [InlineKeyboardButton(text="📝 Добавить пометку", callback_data=f"add_note_{ticket_id}")]]
         if user_role == "admin":
             kb.append([InlineKeyboardButton(text="🚫 В чёрный список", callback_data=f"blacklist_user_{ticket_id}")])
         return InlineKeyboardMarkup(inline_keyboard=kb)
     else:
         kb = [[InlineKeyboardButton(text="💬 Принять", callback_data=f"accept_{ticket_id}")]]
-        if user_role == "admin":
-            kb.append([InlineKeyboardButton(text="👁️ Посмотреть", callback_data=f"view_{ticket_id}")])
         return InlineKeyboardMarkup(inline_keyboard=kb)
 
 @dp.callback_query(F.data.startswith("type_"))
@@ -660,22 +660,6 @@ async def accept_ticket(callback: types.CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=get_ticket_keyboard(ticket_id, db.get_role(admin_id), True))
     await callback.answer("✅ Тикет принят!")
     log_action(admin_id, callback.from_user.username or "admin", "ПРИНЯЛ ТИКЕТ", ticket_id)
-
-@dp.callback_query(F.data.startswith("view_"))
-async def view_ticket(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Только для админов!", show_alert=True)
-        return
-    ticket_id = callback.data.split("_")[1]
-    ticket = db.get_ticket(ticket_id)
-    if not ticket:
-        await callback.answer("❌ Тикет не найден")
-        return
-    assigned = db.get_assigned_admin(ticket_id)
-    status = "✅ ПРИНЯТ" if assigned else "🆓 СВОБОДЕН"
-    text = f"🔍 ПРОСМОТР #{ticket_id}\n{status}\n\n{ticket[4]}"
-    await callback.message.answer(text, reply_markup=get_ticket_keyboard(ticket_id, "admin", False, True))
-    await callback.answer()
 
 @dp.callback_query(F.data.startswith("close_"))
 async def close_ticket(callback: types.CallbackQuery):
@@ -906,6 +890,54 @@ async def send_user_reply(message: types.Message, state: FSMContext):
     await send_new_message(message.chat.id, f"✅ Ответ для #{ticket_id} отправлен")
     await state.clear()
 
+# ========== КНОПКА "ДОБАВИТЬ ПОМЕТКУ" ==========
+@dp.callback_query(F.data.startswith("add_note_"))
+async def add_note_from_ticket(callback: types.CallbackQuery, state: FSMContext):
+    role = db.get_role(callback.from_user.id)
+    if role not in ["admin", "moderator"]:
+        await callback.answer("⛔ Нет прав!", show_alert=True)
+        return
+    
+    ticket_id = callback.data.split("_")[2]
+    ticket = db.get_ticket(ticket_id)
+    if not ticket:
+        await callback.answer("❌ Тикет не найден")
+        return
+    
+    assigned = db.get_assigned_admin(ticket_id)
+    if assigned != callback.from_user.id and role != "admin":
+        await callback.answer("❌ Вы не назначены на этот тикет", show_alert=True)
+        return
+    
+    await callback.answer()
+    await state.update_data(note_ticket_id=ticket_id)
+    await send_new_message(callback.message.chat.id, f"✍️ Введите текст пометки для тикета #{ticket_id}:\n(Пометку увидят только сотрудники)")
+    await state.set_state("waiting_for_note")
+
+@dp.message(StateFilter("waiting_for_note"))
+async def process_note_from_ticket(message: types.Message, state: FSMContext):
+    role = db.get_role(message.from_user.id)
+    if role not in ["admin", "moderator"]:
+        await state.clear()
+        return
+    
+    data = await state.get_data()
+    ticket_id = data.get("note_ticket_id")
+    if not ticket_id:
+        await state.clear()
+        return
+    
+    note_text = message.text.strip()
+    if not note_text:
+        await send_new_message(message.chat.id, "❌ Пометка не может быть пустой")
+        return
+    
+    db.add_note(ticket_id, message.from_user.id, note_text)
+    await delete_previous_bot_message(message.chat.id)
+    await send_new_message(message.chat.id, f"✅ Пометка добавлена к тикету #{ticket_id}")
+    log_action(message.from_user.id, message.from_user.username or "admin", "ДОБАВИЛ ПОМЕТКУ", ticket_id, note_text[:50])
+    await state.clear()
+
 # ========== ЧЁРНЫЙ СПИСОК ==========
 @dp.callback_query(F.data.startswith("blacklist_user_"))
 async def blacklist_user(callback: types.CallbackQuery):
@@ -966,7 +998,7 @@ async def cmd_blacklist(message: types.Message):
             nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"blacklist_page_{page+1}"))
         if nav:
             keyboard.append(nav)
-        keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_blacklist")])
+        keyboard.append([InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")])
         reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
         if "blacklist_msg_id" in pagination_data.get(chat_id, {}):
             try:
@@ -1023,7 +1055,7 @@ async def blacklist_page_callback(callback: types.CallbackQuery):
         nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"blacklist_page_{page+1}"))
     if nav:
         keyboard.append(nav)
-    keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_blacklist")])
+    keyboard.append([InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")])
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     await callback.message.edit_text(text, reply_markup=reply_markup)
     await callback.answer()
@@ -1075,16 +1107,11 @@ async def unblacklist_user_callback(callback: types.CallbackQuery):
         nav.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"blacklist_page_{current_page+1}"))
     if nav:
         keyboard.append(nav)
-    keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_blacklist")])
+    keyboard.append([InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")])
     reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     msg = await send_new_message(chat_id, text, reply_markup=reply_markup)
     pagination_data[chat_id]["blacklist_msg_id"] = msg.message_id
     pagination_data[chat_id]["blacklist_page"] = current_page
-
-@dp.callback_query(F.data == "close_blacklist")
-async def close_blacklist(callback: types.CallbackQuery):
-    await callback.answer()
-    await callback.message.delete()
 
 @dp.message(Command("unblacklist"))
 async def cmd_unblacklist(message: types.Message):
@@ -1503,14 +1530,13 @@ def load_faq():
             "Общие вопросы о проекте": [
                 {"q": "Как связаться с администрацией?", "a": "Создайте тикет через /create_ticket."},
                 {"q": "Где найти правила сервера?", "a": "Нажмите на кнопку ниже.", "url": "https://docs.google.com/document/d/1g-zSDOjvC4UeaZU83bm-tDOtLuWe87b2c7VYY1kNVH8/edit?usp=sharing"},
-                {"q": "Как получить роль/доступ?", "a": "Напишите в тикет."}
+                {"q": "Что делать, если меня забанили?", "a": "Создайте апелляцию через /create_ticket с типом «Апелляция»."}
             ]
         }
         with open(FAQ_FILE, "w", encoding="utf-8") as f:
             json.dump(default_faq, f, ensure_ascii=False, indent=2)
         return default_faq
 
-# Экранирование спецсимволов для Markdown
 def escape_markdown(text: str) -> str:
     special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
     for char in special_chars:
@@ -1532,7 +1558,6 @@ async def cmd_faq(message: types.Message):
     keyboard = []
     for idx, cat in enumerate(categories):
         keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"faq_cat_{idx}")])
-    keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")])
     keyboard.append([InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")])
     
     await send_new_message(message.chat.id, "❓ Выберите категорию вопросов:", 
@@ -1565,7 +1590,6 @@ async def faq_category(callback: types.CallbackQuery):
         q_text = item["q"][:50] + "..." if len(item["q"]) > 50 else item["q"]
         keyboard.append([InlineKeyboardButton(text=q_text, callback_data=f"faq_q_{idx}_{i}")])
     keyboard.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="faq_back")])
-    keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")])
     keyboard.append([InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")])
     
     await callback.message.edit_text(
@@ -1604,21 +1628,17 @@ async def faq_question(callback: types.CallbackQuery):
     
     item = questions[q_idx]
     
-    # Экранируем спецсимволы
     safe_question = escape_markdown(item['q'])
     safe_answer = escape_markdown(item['a'])
     text = f"❓ *{safe_question}*\n\n📌 {safe_answer}"
     
-    # Формируем клавиатуру
     keyboard = []
     
-    # Если есть URL, добавляем кнопку-ссылку
     if "url" in item and item["url"]:
         keyboard.append([InlineKeyboardButton(text="🔗 Открыть правила", url=item["url"])])
     
     keyboard.append([InlineKeyboardButton(text="🔙 К вопросам", callback_data=f"faq_cat_{cat_idx}")])
     keyboard.append([InlineKeyboardButton(text="🏠 Категории", callback_data="faq_back")])
-    keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")])
     keyboard.append([InlineKeyboardButton(text="◀️ На главную", callback_data="back_to_main")])
     
     try:
@@ -1641,12 +1661,7 @@ async def faq_back(callback: types.CallbackQuery):
     await cmd_faq(callback.message)
     await callback.answer()
 
-@dp.callback_query(F.data == "close_faq")
-async def close_faq(callback: types.CallbackQuery):
-    await callback.answer()
-    await callback.message.delete()
-
-# ========== HELP (без форматирования) ==========
+# ========== HELP ==========
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     try:
@@ -1699,7 +1714,7 @@ async def cmd_help(message: types.Message):
         "Статистика персонала\n"
         "/admin_stats – рейтинг всего персонала\n"
         "/top_staff – топ персонала\n\n"
-        "Кнопки под тикетом: Принять, Ответить, Закрыть, Передать."
+        "Кнопки под тикетом: Принять, Ответить, Закрыть, Передать, Добавить пометку."
     )
 
     admin = (
@@ -1721,7 +1736,7 @@ async def cmd_help(message: types.Message):
         "/list_templates – полный список с пагинацией\n\n"
         "Управление тикетами\n"
         "/clear_tickets – удалить все тикеты\n\n"
-        "Дополнительные кнопки под тикетом: Посмотреть, В чёрный список."
+        "Дополнительные кнопки под тикетом: В чёрный список."
     )
 
     if role == "user":
