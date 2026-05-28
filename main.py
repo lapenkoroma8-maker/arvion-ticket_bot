@@ -1490,47 +1490,28 @@ async def cmd_admin_stats(message: types.Message):
 
 # ========== FAQ (ЧАСТЫЕ ВОПРОСЫ) ==========
 FAQ_FILE = "faq.json"
+_faq_cache = None
 
 def load_faq():
+    global _faq_cache
     try:
         with open(FAQ_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        # создаём пример файла, если его нет
+            _faq_cache = json.load(f)
+            return _faq_cache
+    except (FileNotFoundError, json.JSONDecodeError):
         default_faq = {
             "Общие вопросы о проекте": [
                 {"q": "Как связаться с администрацией?", "a": "Создайте тикет через /create_ticket."},
-                {"q": "Где найти правила сервера?", "a": "Правила публикуются в канале @arvion_rules."},
-                {"q": "Как получить роль/доступ?", "a": "Роли выдаются через специальную форму /role или после верификации."},
-                {"q": "Что делать, если меня забанили?", "a": "Создайте апелляцию через /create_ticket, выбрав тип «Апелляция»."}
+                {"q": "Где найти правила сервера?", "a": "Правила в канале @arvion_rules."}
             ],
             "Технические проблемы": [
-                {"q": "Бот не отвечает — что делать?", "a": "Перезапустите бота командой /start. Если не помогло — создайте тикет."},
-                {"q": "Как прикрепить файл к обращению?", "a": "При создании или ответе просто отправьте файл — бот прикрепит его."},
-                {"q": "Почему я не могу создать тикет?", "a": "Возможно, вы в чёрном списке. Обратитесь к админу."}
-            ],
-            "Вопросы по тикет-системе": [
-                {"q": "Сколько времени рассматривается обращение?", "a": "Обычно от нескольких минут до 24 часов."},
-                {"q": "Можно ли закрыть тикет самостоятельно?", "a": "Нет, только администратор или модератор."},
-                {"q": "Как узнать статус моего тикета?", "a": "Используйте команду /my_tickets."},
-                {"q": "Почему тикет закрыт без ответа?", "a": "Возможно, дубликат или нарушение правил оформления."}
-            ],
-            "Модерация и санкции": [
-                {"q": "Как подать апелляцию на блокировку?", "a": "Используйте /create_ticket с типом «Апелляция»."},
-                {"q": "Кто может назначать модераторов?", "a": "Только администраторы проекта."},
-                {"q": "Куда жаловаться на модератора?", "a": "Создайте тикет с типом «Жалоба», укажите ник модератора."}
-            ],
-            "Донаты и поддержка (реальные деньги)": [
-                {"q": "Как поддержать проект реальными деньгами?", "a": "Напишите в тикет — мы пришлём реквизиты (по согласованию)."},
-                {"q": "Какие способы оплаты доступны?", "a": "Банковская карта, СБП, криптовалюта (уточняйте в тикете)."},
-                {"q": "Можно ли вернуть донат?", "a": "Возврат возможен в течение 7 дней при ошибке платежа."}
+                {"q": "Бот не отвечает — что делать?", "a": "Перезапустите /start. Если нет — создайте тикет."}
             ]
         }
         with open(FAQ_FILE, "w", encoding="utf-8") as f:
             json.dump(default_faq, f, ensure_ascii=False, indent=2)
         return default_faq
 
-# Обработчик команды /faq
 @dp.message(Command("faq"))
 async def cmd_faq(message: types.Message):
     try:
@@ -1542,61 +1523,68 @@ async def cmd_faq(message: types.Message):
     if not categories:
         await send_new_message(message.chat.id, "❓ Раздел FAQ временно пуст.")
         return
-    # Формируем кнопки с категориями
     keyboard = []
-    for cat in categories:
-        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"faq_cat_{cat}")])
+    for idx, cat in enumerate(categories):
+        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"faq_cat_{idx}")])
     keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")])
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await send_new_message(message.chat.id, "❓ Выберите категорию вопросов:", reply_markup=reply_markup)
+    await send_new_message(message.chat.id, "❓ Выберите категорию вопросов:", 
+                           reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
 
 @dp.callback_query(F.data.startswith("faq_cat_"))
 async def faq_category(callback: types.CallbackQuery):
-    category = callback.data.split("_", 2)[2]
+    idx = int(callback.data.split("_")[2])
     faq = load_faq()
+    categories = list(faq.keys())
+    if idx >= len(categories):
+        await callback.answer("Категория не найдена")
+        return
+    category = categories[idx]
     questions = faq.get(category, [])
     if not questions:
-        await callback.answer("В этой категории пока нет вопросов.")
+        await callback.answer("В этой категории нет вопросов.")
         return
-    # Показываем вопросы кнопками
     keyboard = []
     for i, item in enumerate(questions):
-        keyboard.append([InlineKeyboardButton(text=item["q"], callback_data=f"faq_q_{category}_{i}")])
+        keyboard.append([InlineKeyboardButton(text=item["q"][:60], callback_data=f"faq_q_{idx}_{i}")])
     keyboard.append([InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="faq_back")])
     keyboard.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")])
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await callback.message.edit_text(f"📂 Категория: {category}\nВыберите вопрос:", reply_markup=reply_markup)
+    await callback.message.edit_text(f"📂 Категория: {category}\nВыберите вопрос:",
+                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("faq_q_"))
 async def faq_question(callback: types.CallbackQuery):
-    parts = callback.data.split("_", 3)
-    # формат: faq_q_{category}_{index}
-    if len(parts) < 4:
-        await callback.answer("Ошибка")
+    parts = callback.data.split("_")
+    if len(parts) < 3:
+        await callback.answer("Ошибка формата")
         return
-    category = parts[2]
-    idx = int(parts[3])
+    cat_idx = int(parts[2])
+    q_idx = int(parts[3]) if len(parts) > 3 else 0
     faq = load_faq()
+    categories = list(faq.keys())
+    if cat_idx >= len(categories):
+        await callback.answer("Категория не найдена")
+        return
+    category = categories[cat_idx]
     questions = faq.get(category, [])
-    if idx >= len(questions):
+    if q_idx >= len(questions):
         await callback.answer("Вопрос не найден")
         return
-    item = questions[idx]
+    item = questions[q_idx]
     text = f"❓ *{item['q']}*\n\n📌 {item['a']}"
-    # Добавляем кнопки "Назад к вопросам" и "В категории"
     keyboard = [
-        [InlineKeyboardButton(text="🔙 К вопросам", callback_data=f"faq_cat_{category}")],
+        [InlineKeyboardButton(text="🔙 К вопросам", callback_data=f"faq_cat_{cat_idx}")],
         [InlineKeyboardButton(text="🏠 Категории", callback_data="faq_back")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="close_faq")]
     ]
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+    await callback.message.edit_text(text, parse_mode="Markdown", 
+                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
 
 @dp.callback_query(F.data == "faq_back")
 async def faq_back(callback: types.CallbackQuery):
-    await cmd_faq(callback.message)  # повторно показываем категории
+    await callback.message.delete()
+    await cmd_faq(callback.message)
     await callback.answer()
 
 @dp.callback_query(F.data == "close_faq")
